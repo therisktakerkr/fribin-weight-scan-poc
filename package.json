@@ -1,0 +1,10 @@
+{
+  "name": "fribin-weight-scan-poc",
+  "private": true,
+  "type": "module",
+  "description": "FRIBIN 라벨 GS1 310n 중량 바코드 인식 최소 기술검증 POC (정솔푸드). 서버/DB/빌드 없음 — 정적 파일 + 파서 단위테스트만 포함.",
+  "scripts": {
+    "test": "node gs1-parser.test.js",
+    "serve": "python3 -m http.server 8787"
+  }
+}

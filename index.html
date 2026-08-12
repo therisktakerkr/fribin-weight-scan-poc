@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>FRIBIN 중량 스캔 POC (정솔푸드 기술검증용)</title>
+<style>
+  :root {
+    --bg: #0f1620;
+    --panel: #16202c;
+    --panel-2: #1c2836;
+    --text: #eef3f8;
+    --muted: #93a4b8;
+    --accent: #2f7cf6;
+    --ok: #21c471;
+    --fail: #ef4444;
+    --warn: #f6b93b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: "Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif; }
+  body { padding: 12px; padding-bottom: 40px; }
+  h1 { font-size: 17px; margin: 4px 0 2px; color: var(--muted); font-weight: 600; }
+  .subtitle { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+
+  .camera-wrap { position: relative; width: 100%; aspect-ratio: 4/3; background: #000;
+    border-radius: 14px; overflow: hidden; border: 2px solid #26364a; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #workCanvas { display: none; } /* 화면에 표시하지 않음 — 저장/전송 없이 픽셀 읽기 전용 */
+
+  .status-badge { position: absolute; top: 10px; left: 10px; padding: 6px 14px;
+    border-radius: 999px; font-weight: 700; font-size: 14px; background: #000a; }
+  .status-badge[data-state="대기"] { color: var(--muted); }
+  .status-badge[data-state="인식 중"] { color: var(--warn); }
+  .status-badge[data-state^="성공"] { color: var(--ok); }
+  .status-badge[data-state^="실패"] { color: var(--fail); }
+
+  #startBtn { position: absolute; inset: 0; width: 100%; height: 100%; border: 0;
+    background: rgba(0,0,0,0.55); color: #fff; font-size: 22px; font-weight: 800; cursor: pointer; }
+
+  .weight-panel { margin-top: 14px; background: var(--panel); border-radius: 14px; padding: 18px;
+    text-align: center; }
+  #weightBig { font-size: 56px; font-weight: 900; letter-spacing: 0.5px; line-height: 1.1; }
+  #weightBig.ok { color: var(--ok); }
+  #weightBig.fail { color: var(--fail); }
+
+  .meta-row { display: flex; justify-content: space-around; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .meta-row b { display: block; color: var(--text); font-size: 18px; }
+
+  .raw-row { margin-top: 10px; font-size: 13px; color: var(--muted); word-break: break-all; }
+  .raw-row code { color: #cfe3ff; background: #0c1420; padding: 4px 8px; border-radius: 8px; display: inline-block; margin-top: 4px; }
+
+  .counters { display: flex; gap: 10px; margin-top: 14px; }
+  .counter-box { flex: 1; background: var(--panel); border-radius: 12px; padding: 12px; text-align: center; }
+  .counter-box .n { font-size: 30px; font-weight: 800; }
+  .counter-box.success .n { color: var(--ok); }
+  .counter-box.fail .n { color: var(--fail); }
+  .counter-box .label { font-size: 12px; color: var(--muted); }
+
+  /* 장갑 낀 상태를 가정한 큰 버튼 */
+  button.big { width: 100%; margin-top: 14px; padding: 20px; font-size: 20px; font-weight: 800;
+    border: 0; border-radius: 14px; cursor: pointer; }
+  #rescanBtn { background: var(--accent); color: #fff; }
+  #rescanBtn[hidden] { display: none; }
+
+  #cameraError { color: var(--fail); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+
+  details { margin-top: 18px; background: var(--panel-2); border-radius: 12px; padding: 10px 14px; }
+  summary { cursor: pointer; font-weight: 700; color: var(--muted); padding: 6px 0; }
+  .dev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; font-size: 13px; margin-top: 10px; }
+  .dev-grid .k { color: var(--muted); }
+  .dev-grid .v { color: var(--text); word-break: break-all; }
+
+  #logList { list-style: none; margin: 10px 0 0; padding: 0; max-height: 220px; overflow-y: auto;
+    font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #logList li { padding: 4px 6px; border-bottom: 1px solid #24344a; word-break: break-all; }
+  #logList li.log-ok { color: var(--ok); }
+  #logList li.log-fail { color: var(--fail); }
+
+  #copyLogBtn { background: var(--panel-2); color: var(--text); border: 1px solid #2a3c52; }
+
+  .footnote { margin-top: 18px; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+  .footnote b { color: var(--warn); }
+</style>
+</head>
+<body>
+
+  <h1>FRIBIN 중량 스캔 POC</h1>
+  <div class="subtitle">정솔푸드 기술검증 전용 · 서버 저장 없음 · 사진 저장 없음 · 로그인/거래처/DB 없음</div>
+
+  <div class="camera-wrap">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="workCanvas"></canvas>
+    <div class="status-badge" id="status" data-state="대기">대기</div>
+    <button id="startBtn">탭해서 카메라 시작<br /><span style="font-size:13px;font-weight:500;">(후면 카메라 권한을 허용해 주세요)</span></button>
+  </div>
+  <div id="cameraError"></div>
+
+  <div class="weight-panel">
+    <div id="weightBig">-- kg</div>
+    <div class="raw-row">
+      원본 바코드 문자열<br />
+      <code id="rawText">(아직 스캔 안 됨)</code>
+    </div>
+    <div class="meta-row">
+      <div>소요시간<b id="elapsed">-</b></div>
+    </div>
+  </div>
+
+  <div class="counters">
+    <div class="counter-box success"><div class="n" id="successCount">0</div><div class="label">성공 횟수</div></div>
+    <div class="counter-box fail"><div class="n" id="failCount">0</div><div class="label">실패 횟수</div></div>
+  </div>
+
+  <button id="rescanBtn" class="big" hidden>다음 박스 · 다시 스캔</button>
+
+  <details open>
+    <summary>개발자 정보 (디코더 원본 반환값 — 실기 확인용)</summary>
+    <div class="dev-grid">
+      <div class="k">format (바코드 형식)</div><div class="v" id="devFormat">-</div>
+      <div class="k">symbology</div><div class="v" id="devSymbology">-</div>
+      <div class="k">symbologyIdentifier</div><div class="v" id="devSymbologyId">-</div>
+      <div class="k">contentType</div><div class="v" id="devContentType">-</div>
+      <div class="k">FNC1/GS 구분자 반환 여부</div><div class="v" id="devGsFlag">-</div>
+      <div class="k">파싱한 AI 코드</div><div class="v" id="devAi">-</div>
+      <div class="k">파싱 전 중량 숫자(원본 6자리)</div><div class="v" id="devRawDigits">-</div>
+      <div class="k">최종 kg 값</div><div class="v" id="devFinalKg">-</div>
+      <div class="k">인식 소요시간</div><div class="v" id="devElapsed">-</div>
+      <div class="k">디코더 error 필드</div><div class="v" id="devError">-</div>
+    </div>
+  </details>
+
+  <details>
+    <summary>세션 로그 (이 화면을 벗어나면 사라짐 · 서버 전송 없음)</summary>
+    <button id="copyLogBtn" class="big">테스트 로그 복사</button>
+    <ul id="logList"></ul>
+  </details>
+
+  <div class="footnote">
+    이 페이지는 <b>정솔푸드 수입육 박스 중량 스캔 시스템 — FRIBIN 라벨 기술검증 POC</b>입니다.<br />
+    카메라 프레임은 인식 처리에만 잠깐 쓰이고 저장되거나 외부로 전송되지 않습니다. 로그인, 거래처/상품 선택, 서버 저장,
+    Excel 연동, OCR, GTIN 매핑 기능은 이 POC에 없습니다(의도적으로 제외).<br />
+    바코드 인식 라이브러리: zxing-wasm v3.1.2 (오픈소스, <a href="https://github.com/Sec-ant/zxing-wasm" style="color:#7fb0ff;">GitHub</a>)
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
