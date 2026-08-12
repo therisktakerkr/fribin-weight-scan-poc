@@ -15,6 +15,7 @@
     --ok: #21c471;
     --fail: #ef4444;
     --warn: #f6b93b;
+    --ref: #6c7f96;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
@@ -23,20 +24,43 @@
   h1 { font-size: 17px; margin: 4px 0 2px; color: var(--muted); font-weight: 600; }
   .subtitle { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
 
+  /* V3: 긴 가로 바코드 대응을 위해 세로 화면에서도 카메라 영역을 넓게(더 낮은 종횡비) 확보 */
   .camera-wrap { position: relative; width: 100%; aspect-ratio: 4/3; background: #000;
     border-radius: 14px; overflow: hidden; border: 2px solid #26364a; }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
-  #workCanvas { display: none; } /* 화면에 표시하지 않음 — 저장/전송 없이 픽셀 읽기 전용 */
+  #workCanvas, #ocrCanvas { display: none; } /* 화면에 표시하지 않음 — 저장/전송 없이 픽셀 읽기 전용 */
 
   .status-badge { position: absolute; top: 10px; left: 10px; padding: 6px 14px;
-    border-radius: 999px; font-weight: 700; font-size: 14px; background: #000a; }
+    border-radius: 999px; font-weight: 700; font-size: 14px; background: #000a; z-index: 5; }
   .status-badge[data-state="대기"] { color: var(--muted); }
   .status-badge[data-state="인식 중"] { color: var(--warn); }
   .status-badge[data-state^="성공"] { color: var(--ok); }
   .status-badge[data-state^="실패"] { color: var(--fail); }
 
+  /* V3 신규: 긴 가로 바코드 안내선 (실제 스캔 영역을 자르는 것이 아니라 시각적 가이드) */
+  .scan-guide { position: absolute; left: 4%; right: 4%; top: 50%; height: 34%;
+    transform: translateY(-50%); border: 2px solid rgba(255,255,255,0.55); border-radius: 8px;
+    pointer-events: none; z-index: 3; }
+  .scan-guide::before, .scan-guide::after { content: ""; position: absolute; top: 50%; left: 0; right: 0;
+    height: 1px; background: rgba(255,80,80,0.85); transform: translateY(-50%); }
+  .scan-guide .corner { position: absolute; width: 20px; height: 20px; border-color: #21c471; }
+  .scan-guide .tl { top: -2px; left: -2px; border-top: 4px solid; border-left: 4px solid; }
+  .scan-guide .tr { top: -2px; right: -2px; border-top: 4px solid; border-right: 4px solid; }
+  .scan-guide .bl { bottom: -2px; left: -2px; border-bottom: 4px solid; border-left: 4px solid; }
+  .scan-guide .br { bottom: -2px; right: -2px; border-bottom: 4px solid; border-right: 4px solid; }
+  .scan-guide-hint { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center;
+    font-size: 12px; color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; z-index: 3; }
+
   #startBtn { position: absolute; inset: 0; width: 100%; height: 100%; border: 0;
-    background: rgba(0,0,0,0.55); color: #fff; font-size: 22px; font-weight: 800; cursor: pointer; }
+    background: rgba(0,0,0,0.55); color: #fff; font-size: 22px; font-weight: 800; cursor: pointer; z-index: 10; }
+
+  /* V3 신규: 줌/손전등 컨트롤 — 기기가 지원할 때만 화면에 나타남(js에서 hidden 해제) */
+  .camera-controls { position: absolute; right: 8px; bottom: 8px; display: flex; flex-direction: column;
+    gap: 8px; z-index: 6; }
+  .camera-controls button { background: #000a; color: #fff; border: 1px solid #ffffff40; border-radius: 10px;
+    padding: 10px 12px; font-size: 16px; font-weight: 700; }
+  #zoomWrap { position: absolute; left: 8px; bottom: 8px; right: 90px; z-index: 6; display: none; }
+  #zoomRange { width: 100%; }
 
   .weight-panel { margin-top: 14px; background: var(--panel); border-radius: 14px; padding: 18px;
     text-align: center; }
@@ -63,6 +87,20 @@
   #rescanBtn { background: var(--accent); color: #fff; }
   #rescanBtn[hidden] { display: none; }
 
+  #ocrBtn { background: var(--panel-2); color: var(--text); border: 1px solid #33465e; }
+  #ocrBtn[hidden] { display: none; }
+
+  .ocr-panel { margin-top: 14px; background: var(--panel); border-radius: 14px; padding: 16px; display: none; }
+  .ocr-panel.show { display: block; }
+  .ocr-panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--warn); }
+  .ocr-candidate { font-size: 40px; font-weight: 900; text-align: center; margin: 10px 0; color: var(--warn); }
+  .ocr-raw { font-size: 12px; color: var(--muted); background: #0c1420; padding: 8px; border-radius: 8px;
+    word-break: break-all; max-height: 90px; overflow-y: auto; }
+  .ocr-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .ocr-actions button { flex: 1; padding: 16px; font-size: 16px; font-weight: 800; border: 0; border-radius: 12px; }
+  #ocrConfirmBtn { background: var(--ok); color: #06210f; }
+  #ocrCancelBtn { background: #2a2a2a; color: #fff; }
+
   #cameraError { color: var(--fail); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
 
   details { margin-top: 18px; background: var(--panel-2); border-radius: 12px; padding: 10px 14px; }
@@ -71,11 +109,12 @@
   .dev-grid .k { color: var(--muted); }
   .dev-grid .v { color: var(--text); word-break: break-all; }
 
-  #logList { list-style: none; margin: 10px 0 0; padding: 0; max-height: 220px; overflow-y: auto;
+  #logList { list-style: none; margin: 10px 0 0; padding: 0; max-height: 260px; overflow-y: auto;
     font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   #logList li { padding: 4px 6px; border-bottom: 1px solid #24344a; word-break: break-all; }
   #logList li.log-ok { color: var(--ok); }
   #logList li.log-fail { color: var(--fail); }
+  #logList li.log-ref { color: var(--ref); } /* V3 신규: 성공은 아니지만 뭔가 읽힌 "참고" 로그 */
 
   #copyLogBtn { background: var(--panel-2); color: var(--text); border: 1px solid #2a3c52; }
 
@@ -91,7 +130,24 @@
   <div class="camera-wrap">
     <video id="video" autoplay muted playsinline></video>
     <canvas id="workCanvas"></canvas>
+    <canvas id="ocrCanvas"></canvas>
     <div class="status-badge" id="status" data-state="대기">대기</div>
+
+    <!-- V3 신규: 긴 가로 바코드 정렬 안내선 (실제 인식 영역을 자르지 않는 시각 가이드) -->
+    <div class="scan-guide" id="scanGuide">
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+    </div>
+    <div class="scan-guide-hint">긴 바코드를 이 선에 맞춰 가로로 비춰주세요</div>
+
+    <!-- V3 신규: 줌/손전등 (기기가 지원할 때만 표시) -->
+    <div class="camera-controls">
+      <button id="torchBtn" hidden type="button">🔦 손전등</button>
+    </div>
+    <div id="zoomWrap">
+      <input type="range" id="zoomRange" min="1" max="1" step="0.1" value="1" />
+    </div>
+
     <button id="startBtn">탭해서 카메라 시작<br /><span style="font-size:13px;font-weight:500;">(후면 카메라 권한을 허용해 주세요)</span></button>
   </div>
   <div id="cameraError"></div>
@@ -99,7 +155,7 @@
   <div class="weight-panel">
     <div id="weightBig">-- kg</div>
     <div class="raw-row">
-      원본 바코드 문자열<br />
+      원본 바코드 문자열 (실시간 — 성공하지 않아도 계속 갱신됨)<br />
       <code id="rawText">(아직 스캔 안 됨)</code>
     </div>
     <div class="meta-row">
@@ -114,19 +170,33 @@
 
   <button id="rescanBtn" class="big" hidden>다음 박스 · 다시 스캔</button>
 
+  <!-- V3 신규: OCR 보조 인식 -->
+  <button id="ocrBtn" class="big" hidden>📷 OCR로 중량 읽기 (보조, GS1 인식 어려울 때)</button>
+  <div class="ocr-panel" id="ocrPanel">
+    <h3>OCR 인식 결과 — 확인 후 직접 확정해 주세요 (자동 저장 안 됨)</h3>
+    <div class="ocr-candidate" id="ocrCandidate">인식 중...</div>
+    <div class="ocr-raw" id="ocrRawText">-</div>
+    <div class="ocr-actions">
+      <button id="ocrConfirmBtn" disabled>이 값으로 확정</button>
+      <button id="ocrCancelBtn">취소 · 다시 스캔</button>
+    </div>
+  </div>
+
   <details open>
-    <summary>개발자 정보 (디코더 원본 반환값 — 실기 확인용)</summary>
+    <summary>개발자 정보 (디코더 원본 반환값 — 최근 시도 기준, 실기 확인용)</summary>
     <div class="dev-grid">
       <div class="k">format (바코드 형식)</div><div class="v" id="devFormat">-</div>
       <div class="k">symbology</div><div class="v" id="devSymbology">-</div>
       <div class="k">symbologyIdentifier</div><div class="v" id="devSymbologyId">-</div>
       <div class="k">contentType</div><div class="v" id="devContentType">-</div>
       <div class="k">FNC1/GS 구분자 반환 여부</div><div class="v" id="devGsFlag">-</div>
+      <div class="k">이번 프레임 인식된 바코드 수</div><div class="v" id="devResultCount">-</div>
       <div class="k">파싱한 AI 코드</div><div class="v" id="devAi">-</div>
       <div class="k">파싱 전 중량 숫자(원본 6자리)</div><div class="v" id="devRawDigits">-</div>
       <div class="k">최종 kg 값</div><div class="v" id="devFinalKg">-</div>
       <div class="k">인식 소요시간</div><div class="v" id="devElapsed">-</div>
       <div class="k">디코더 error 필드</div><div class="v" id="devError">-</div>
+      <div class="k">카메라 해상도 / 줌·손전등 지원</div><div class="v" id="devCameraCaps">-</div>
     </div>
   </details>
 
@@ -138,9 +208,12 @@
 
   <div class="footnote">
     이 페이지는 <b>정솔푸드 수입육 박스 중량 스캔 시스템 — FRIBIN 라벨 기술검증 POC</b>입니다.<br />
-    카메라 프레임은 인식 처리에만 잠깐 쓰이고 저장되거나 외부로 전송되지 않습니다. 로그인, 거래처/상품 선택, 서버 저장,
-    Excel 연동, OCR, GTIN 매핑 기능은 이 POC에 없습니다(의도적으로 제외).<br />
-    바코드 인식 라이브러리: zxing-wasm v3.1.2 (오픈소스, <a href="https://github.com/Sec-ant/zxing-wasm" style="color:#7fb0ff;">GitHub</a>)
+    카메라 프레임은 인식 처리에만 잠깐 쓰이고 저장되거나 외부로 전송되지 않습니다. OCR도 같은 원칙으로,
+    캡처한 화면은 글자 인식에만 쓰이고 저장·전송되지 않습니다. 로그인, 거래처/상품 선택, 서버 저장,
+    Excel 연동, DB, GTIN 매핑 기능은 이 POC에 없습니다(의도적으로 제외).<br />
+    바코드 인식: zxing-wasm v3.1.2 · OCR(보조): tesseract.js v7.0.0 (둘 다 오픈소스,
+    <a href="https://github.com/Sec-ant/zxing-wasm" style="color:#7fb0ff;">zxing-wasm</a> /
+    <a href="https://github.com/naptha/tesseract.js" style="color:#7fb0ff;">tesseract.js</a>)
   </div>
 
   <script type="module" src="./app.js"></script>
