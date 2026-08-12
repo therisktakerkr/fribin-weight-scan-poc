@@ -53,7 +53,8 @@ const failCountEl = document.getElementById("failCount");
 const confirmBtn = document.getElementById("confirmBtn");
 const retryBtn = document.getElementById("retryBtn");
 const barcodeModeBtn = document.getElementById("barcodeModeBtn");
-const ocrBtn = document.getElementById("ocrBtn");
+const ocrModeBtn = document.getElementById("ocrModeBtn");
+const ocrCaptureBtn = document.getElementById("ocrCaptureBtn");
 const startBtn = document.getElementById("startBtn");
 const logListEl = document.getElementById("logList");
 const copyLogBtn = document.getElementById("copyLogBtn");
@@ -160,7 +161,7 @@ async function startCamera() {
     videoTrack = stream.getVideoTracks()[0];
     streamStarted = true;
     startBtn.hidden = true;
-    ocrBtn.hidden = false;
+    ocrModeBtn.hidden = false;
     barcodeModeBtn.hidden = false;
     manualEntryBtn.hidden = false;
     await applyCameraCapabilities();
@@ -220,10 +221,14 @@ torchBtn.addEventListener("click", async () => {
 });
 
 // ── 가이드 UI 전환 (바코드: 넓은 사각형 / OCR: 작은 가로 사각형) ───────────
+// V7: OCR은 이제 "모드 진입"(사각형만 표시)과 "촬영"(실제 캡처+OCR)이 분리된 2단계다
+// (요청사항 1) — enterOcrGuideUi()는 사각형을 보여주기만 하고 촬영/OCR은 절대 시작하지 않는다.
 function enterBarcodeGuideUi() {
   currentMode = "BARCODE";
   ocrGuideEl.hidden = true;
   ocrGuideHintEl.hidden = true;
+  ocrCaptureBtn.hidden = true;
+  ocrModeBtn.hidden = false;
   scanGuideEl.style.display = "";
   scanGuideHintEl.style.display = "";
   retryBtn.textContent = "다시 인식";
@@ -234,8 +239,21 @@ function enterOcrGuideUi() {
   scanGuideHintEl.style.display = "none";
   ocrGuideEl.hidden = false;
   ocrGuideHintEl.hidden = false;
+  ocrGuideEl.classList.remove("flash");
+  ocrModeBtn.hidden = true;
+  ocrCaptureBtn.hidden = false;
+  ocrCaptureBtn.disabled = false;
+  ocrCaptureBtn.textContent = "📸 사각형 촬영·중량 읽기";
   retryBtn.textContent = "다시 촬영";
 }
+
+// 사각형 테두리를 잠깐 흰색으로 바꿔 "지금 찍혔다"는 신호를 준다(요청사항 5).
+function flashOcrGuide(durationMs = 130) {
+  ocrGuideEl.classList.add("flash");
+  setTimeout(() => ocrGuideEl.classList.remove("flash"), durationMs);
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 // ── 바코드 모드 (1순위: GS1) ────────────────────────────────────────────
 function enterBarcodeMode(isFirst = false) {
@@ -705,12 +723,43 @@ function devOcrFallbackLog(devFallback, passResults) {
   }
 }
 
-ocrBtn.addEventListener("click", async () => {
+// V7 요청사항 1: OCR을 "모드 진입"과 "촬영"으로 분리한다. 이 버튼은 사각형·안내문구만
+// 표시할 뿐, 이 시점에는 촬영도 OCR도 절대 시작하지 않는다 — 사용자가 라벨의 "중량 X kg"
+// 행에 사각형을 맞출 시간을 충분히 준다.
+ocrModeBtn.addEventListener("click", () => {
   frozen = true;
   if (noBarcodeTimeoutHandle) { clearTimeout(noBarcodeTimeoutHandle); noBarcodeTimeoutHandle = null; }
   if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
 
   enterOcrGuideUi();
+  clearCandidatePanel();
+  hideUncertainBanner();
+  manualEntryPanelEl.style.display = "none";
+  rawTextEl.textContent = "(아직 촬영 안 됨)";
+  elapsedEl.textContent = "-";
+  ocrRecognizeTimeEl.textContent = "-";
+  setStatus(streamStarted ? "대기 (사각형을 맞춘 뒤 촬영 버튼을 누르세요)" : "대기");
+});
+
+// 같은 사각형 영역을 300ms 간격의 서로 다른 순간에 캡처한다(요청사항 6·7) — 손떨림이나
+// 자동초점이 흔들리는 한 순간에만 의존하지 않기 위함이다. 캡처한 캔버스는 OCR 처리에만
+// 쓰이고 저장·전송되지 않으며, 다음 촬영에서 덮어써진다.
+function captureOcrRoiFrame(roi) {
+  const c = document.createElement("canvas");
+  c.width = roi.roiW;
+  c.height = roi.roiH;
+  c.getContext("2d").drawImage(video, roi.roiX, roi.roiY, roi.roiW, roi.roiH, 0, 0, roi.roiW, roi.roiH);
+  return c;
+}
+
+// V7 요청사항 1: 실제 촬영과 OCR은 이 버튼을 눌러야만 시작된다.
+ocrCaptureBtn.addEventListener("click", async () => {
+  if (ocrCaptureBtn.disabled) return;
+  frozen = true;
+  ocrCaptureBtn.disabled = true;
+  if (noBarcodeTimeoutHandle) { clearTimeout(noBarcodeTimeoutHandle); noBarcodeTimeoutHandle = null; }
+  if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
+
   clearCandidatePanel();
   hideUncertainBanner();
   manualEntryPanelEl.style.display = "none";
@@ -726,52 +775,77 @@ ocrBtn.addEventListener("click", async () => {
     ocrLoadTimeEl.textContent = ocrEngineReady && loadMs < 50 ? "이미 로딩됨" : loadMs + "ms";
     ocrEngineReady = true;
 
+    // 요청사항 1: 촬영 실행 전 최소 700ms 동안 카메라 초점이 안정될 시간을 둔다.
+    weightIdleEl.textContent = "초점 맞추는 중...";
+    setStatus("인식 중 (초점 안정화)");
+    await sleep(700);
+
     // 요청사항 3: 사각형(#ocrGuide) 내부만 원본 해상도로 크롭한다 — 그 밖은 처리하지 않는다.
     const roi = getOcrRoiNative();
     if (!roi) throw new Error("카메라 영상 크기를 아직 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.");
 
-    const rawCropCanvas = document.createElement("canvas");
-    rawCropCanvas.width = roi.roiW;
-    rawCropCanvas.height = roi.roiH;
-    rawCropCanvas.getContext("2d").drawImage(video, roi.roiX, roi.roiY, roi.roiW, roi.roiH, 0, 0, roi.roiW, roi.roiH);
-    // ↑ 캡처한 사각형 내부 영역은 OCR 처리에만 쓰이고 저장·전송되지 않음. 다음 시도에서 캔버스는 덮어써짐.
+    // 요청사항 5·6: 촬영 순간마다 사각형을 흰색으로 잠깐 표시하고, 300ms 간격으로 3장을 캡처한다.
+    weightIdleEl.textContent = "촬영 중 (1/3)...";
+    setStatus("인식 중 (촬영 1/3)");
+    flashOcrGuide();
+    const frameA = captureOcrRoiFrame(roi);
+    await sleep(300);
 
-    // 요청사항 4: 2~4배 확대(여기서는 3배) 후, 요청사항 5: 4가지 전처리 버전을 만든다.
-    const baseCanvas = makeUpscaledCanvas(rawCropCanvas, OCR_UPSCALE_FACTOR);
-    const grayCanvas = toGrayscaleCanvas(baseCanvas);
-    const contrastCanvas = toContrastEnhancedCanvas(grayCanvas);
-    const binarizedCanvas = toBinarizedCanvas(grayCanvas);
+    weightIdleEl.textContent = "촬영 중 (2/3)...";
+    setStatus("인식 중 (촬영 2/3)");
+    flashOcrGuide();
+    const frameB = captureOcrRoiFrame(roi);
+    await sleep(300);
 
-    // 미리보기 캔버스(숨김, 저장/전송 없음)에 대비강화본을 표시해 개발 확인용으로만 남긴다.
-    ocrCanvas.width = contrastCanvas.width; ocrCanvas.height = contrastCanvas.height;
-    ocrCanvas.getContext("2d").drawImage(contrastCanvas, 0, 0);
+    weightIdleEl.textContent = "촬영 중 (3/3)...";
+    setStatus("인식 중 (촬영 3/3)");
+    flashOcrGuide();
+    const frameC = captureOcrRoiFrame(roi);
+
+    // 요청사항 4: 2~4배 확대(여기서는 4배) 후, 각 프레임에서 필요한 전처리 버전만 만든다.
+    // 세 프레임에 걸쳐 원본/그레이스케일/대비강화/이진화/숫자전용 5개 패스를 분산 배치해
+    // (기존 V6과 동일한 5패스 합의 로직·처리량을 유지하면서) 각기 다른 촬영 시점을 반영한다.
+    const baseA = makeUpscaledCanvas(frameA, OCR_UPSCALE_FACTOR);
+    const grayA = toGrayscaleCanvas(baseA);
+    const baseB = makeUpscaledCanvas(frameB, OCR_UPSCALE_FACTOR);
+    const grayB = toGrayscaleCanvas(baseB);
+    const contrastB = toContrastEnhancedCanvas(grayB);
+    const binarizedB = toBinarizedCanvas(grayB);
+    const baseC = makeUpscaledCanvas(frameC, OCR_UPSCALE_FACTOR);
+    const grayC = toGrayscaleCanvas(baseC);
+    const contrastC = toContrastEnhancedCanvas(grayC);
+
+    // 미리보기 캔버스(숨김, 저장/전송 없음)에 가운데(2번째) 프레임의 대비강화본을 표시해
+    // 개발 확인용으로만 남긴다.
+    ocrCanvas.width = contrastB.width; ocrCanvas.height = contrastB.height;
+    ocrCanvas.getContext("2d").drawImage(contrastB, 0, 0);
 
     const recognizeStart = performance.now();
     const passResults = [];
 
-    weightIdleEl.textContent = "글자 인식 중 (원본, 1/5)...";
-    passResults.push(await runOcrPass(worker, baseCanvas, "원본"));
+    weightIdleEl.textContent = "글자 인식 중 (1/3 프레임-원본, 1/5)...";
+    passResults.push(await runOcrPass(worker, baseA, "프레임1-원본"));
 
-    weightIdleEl.textContent = "글자 인식 중 (그레이스케일, 2/5)...";
-    passResults.push(await runOcrPass(worker, grayCanvas, "그레이스케일"));
+    weightIdleEl.textContent = "글자 인식 중 (1/3 프레임-그레이스케일, 2/5)...";
+    passResults.push(await runOcrPass(worker, grayA, "프레임1-그레이스케일"));
 
-    weightIdleEl.textContent = "글자 인식 중 (대비강화, 3/5)...";
-    passResults.push(await runOcrPass(worker, contrastCanvas, "대비강화"));
+    weightIdleEl.textContent = "글자 인식 중 (2/3 프레임-대비강화, 3/5)...";
+    passResults.push(await runOcrPass(worker, contrastB, "프레임2-대비강화"));
 
-    weightIdleEl.textContent = "글자 인식 중 (이진화, 4/5)...";
-    passResults.push(await runOcrPass(worker, binarizedCanvas, "이진화"));
+    weightIdleEl.textContent = "글자 인식 중 (2/3 프레임-이진화, 4/5)...";
+    passResults.push(await runOcrPass(worker, binarizedB, "프레임2-이진화"));
 
-    // 요청사항 7: 숫자/단위 위주 인식을 위한 화이트리스트 전용 패스(5번째).
-    weightIdleEl.textContent = "글자 인식 중 (숫자전용, 5/5)...";
+    // 요청사항 7: 숫자/단위 위주 인식을 위한 화이트리스트 전용 패스(3번째 프레임에서 수행).
+    weightIdleEl.textContent = "글자 인식 중 (3/3 프레임-숫자전용, 5/5)...";
     try {
       await worker.setParameters({ tessedit_char_whitelist: "0123456789.,kgKG" });
-      passResults.push(await runOcrPass(worker, contrastCanvas, "숫자전용"));
+      passResults.push(await runOcrPass(worker, contrastC, "프레임3-숫자전용"));
     } finally {
       await worker.setParameters({ tessedit_char_whitelist: "" });
     }
 
     const recognizeMs = Math.round(performance.now() - recognizeStart);
-    ocrRecognizeTimeEl.textContent = recognizeMs + "ms (전처리 5개 합산)";
+    ocrRecognizeTimeEl.textContent = recognizeMs + "ms (3프레임 × 5패스 합산)";
 
     rawTextEl.textContent = passResults
       .map((p) => `[${p.passName}] ${(p.text || "").replace(/\s+/g, " ").trim() || "(없음)"}`)
@@ -807,10 +881,12 @@ ocrBtn.addEventListener("click", async () => {
       failCount += 1;
       failCountEl.textContent = String(failCount);
       failFeedback();
-      showUncertainBanner("⚠ 사각형 안에서 숫자를 찾지 못했습니다 — 사각형을 '중량 X kg' 행에 맞추고 다시 촬영하거나, 아래 '직접 입력'을 사용해 주세요.");
+      // 요청사항 8·9: 실패 문구 + 다시 촬영/직접 입력 안내. 사각형은 그대로 유지되므로
+      // 사용자는 위치를 고친 뒤 "사각형 촬영·중량 읽기"를 바로 다시 누르면 된다.
+      showUncertainBanner("⚠ 중량 숫자 또는 kg가 사각형 밖에 있을 수 있습니다 — 사각형을 다시 맞추고 '다시 촬영'을 누르거나, 아래 '직접 입력'을 사용해 주세요.");
     } else if (combined.uncertain) {
       // 요청사항 12: 합의가 없으면 "인식 결과가 불확실합니다" + 전체 후보 + 다시 촬영 + 직접 입력.
-      showUncertainBanner("⚠ 인식 결과가 불확실합니다 — 전처리 결과들이 서로 다른 값을 보였습니다. 아래 후보를 라벨 실물과 비교해 직접 선택하거나, 다시 촬영하거나, 직접 입력해 주세요.");
+      showUncertainBanner("⚠ 인식 결과가 불확실합니다 — 서로 다른 촬영/전처리 결과가 다른 값을 보였습니다. 아래 후보를 라벨 실물과 비교해 직접 선택하거나, 다시 촬영하거나, 직접 입력해 주세요.");
     } else {
       hideUncertainBanner();
       foundFeedback();
@@ -825,6 +901,8 @@ ocrBtn.addEventListener("click", async () => {
     setStatus("실패 — OCR 오류");
     confirmBtn.disabled = true;
     failFeedback();
+  } finally {
+    ocrCaptureBtn.disabled = false;
   }
 });
 
@@ -860,8 +938,6 @@ async function getOcrWorker() {
         gzip: true,
         logger: () => {},
       });
-      // 페이지 분할 모드(PSM) 실험: 7(단일 줄) 고정은 오히려 소수점을 더 자주 놓쳤다
-      // (기본값 3이 이 좁은 크롭에서 더 나은 결과를 보임) — 기본값을 유지한다.
       return worker;
     })();
   }

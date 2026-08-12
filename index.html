@@ -43,12 +43,16 @@
   .scan-guide-hint { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center;
     font-size: 12px; color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; z-index: 3; }
 
-  /* OCR용 — 가로로 긴 "작은" 사각형. 라벨의 "중량 X kg" 한 줄만 들어오도록 좁게 설계.
+  /* OCR용 — 가로로 긴 사각형. 라벨의 "중량 X kg" 한 줄 + 약간의 여백만 들어오도록 설계.
+     (V7: 폭을 화면의 약 88%까지 넓혀 실제 촬영 시 정렬 난이도를 낮췄다 — 사용자 요청사항 2)
      이 사각형의 실제 화면상 위치/크기(getBoundingClientRect)를 app.js가 그대로 읽어서
      카메라 원본 좌표로 환산하므로, 아래 수치를 바꾸면 앱 동작도 자동으로 맞춰진다. */
-  .ocr-guide { position: absolute; left: 28%; right: 28%; top: 50%; height: 22%;
+  .ocr-guide { position: absolute; left: 6%; right: 6%; top: 50%; height: 16%;
     transform: translateY(-50%); border: 3px solid var(--warn); border-radius: 10px;
-    pointer-events: none; z-index: 3; box-shadow: 0 0 0 2000px rgba(0,0,0,0.35); }
+    pointer-events: none; z-index: 3; box-shadow: 0 0 0 2000px rgba(0,0,0,0.35);
+    transition: border-color 120ms ease; }
+  /* V7 요청사항 5: 촬영 순간에는 테두리를 잠시 흰색으로 바꿔 "지금 찍혔다"를 알려준다 */
+  .ocr-guide.flash { border-color: #ffffff; }
   .ocr-guide .corner { position: absolute; width: 16px; height: 16px; border-color: #fff; }
   .ocr-guide .tl { top: -3px; left: -3px; border-top: 3px solid; border-left: 3px solid; }
   .ocr-guide .tr { top: -3px; right: -3px; border-top: 3px solid; border-right: 3px solid; }
@@ -120,7 +124,9 @@
 
   .mode-row { display: flex; gap: 10px; margin-top: 10px; }
   .mode-row button { flex: 1; background: var(--accent); color: #fff; }
-  #ocrBtn { background: #6a4fc4; }
+  #ocrModeBtn { background: #6a4fc4; }
+  #ocrCaptureBtn { background: #c4644f; }
+  #ocrCaptureBtn:disabled { background: #5c4038; color: #c9beb9; cursor: not-allowed; }
   .mode-row button[hidden] { display: none; }
 
   #cameraError { color: var(--fail); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
@@ -165,7 +171,7 @@
       <span class="corner tl"></span><span class="corner tr"></span>
       <span class="corner bl"></span><span class="corner br"></span>
     </div>
-    <div class="ocr-guide-hint" id="ocrGuideHint" hidden>중량 숫자와 kg가 사각형 안에 들어오게 맞춰주세요</div>
+    <div class="ocr-guide-hint" id="ocrGuideHint" hidden>중량 숫자와 kg가 모두 사각형 안에 들어오게 맞춘 뒤 촬영 버튼을 누르세요.</div>
 
     <div class="camera-controls">
       <button id="torchBtn" hidden type="button">🔦 손전등</button>
@@ -217,7 +223,10 @@
 
   <div class="mode-row">
     <button id="barcodeModeBtn" hidden type="button">📷 바코드로 중량 찾기</button>
-    <button id="ocrBtn" hidden type="button">🔤 글자로 중량 찾기</button>
+    <button id="ocrModeBtn" hidden type="button">🔤 글자 중량 모드</button>
+  </div>
+  <div class="mode-row">
+    <button id="ocrCaptureBtn" hidden type="button">📸 사각형 촬영·중량 읽기</button>
   </div>
 
   <details>
