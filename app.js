@@ -1,55 +1,69 @@
 /**
- * app.js — FRIBIN 중량 스캔 POC 메인 로직 (V3 — 실제 라벨 테스트 결과 반영)
+ * app.js — 박스 중량 스캔 POC 메인 로직 (V6 — "중량 영역 전용" OCR + 다중 전처리 합의)
  *
- * 사용 라이브러리: zxing-wasm 3.1.2 (바코드), tesseract.js 7.0.0 (OCR 보조) — 둘 다
- * vendor/ 폴더에 로컬로 복사해 CDN 없이 동작. 카메라 프레임/OCR 캡처 화면은 인식 처리에만
- * 일시적으로 쓰이고 저장·전송되지 않는다. 매 시도마다 같은 캔버스를 덮어쓴다.
+ * 사용 라이브러리: zxing-wasm 3.1.2(바코드), tesseract.js 7.0.0(OCR, 영어+한국어) — 전부
+ * vendor/ 폴더에 로컬로 복사해 CDN 없이 동작. 카메라/OCR 캡처 화면은 인식 처리에만 일시적으로
+ * 쓰이고 저장·전송되지 않는다.
  *
- * V3 수정사항(실제 FRIBIN 라벨 테스트 결과 반영, 이전 요청 12개 항목):
- *  1) 위쪽 일반 Code128("25789003")이 먼저 잡혀도 스캔을 멈추지 않고 계속 검색한다.
- *  2) 한 프레임에서 인식된 여러 바코드 결과 중, AI 3100~3109(순중량 kg)가 포함된 것만 "성공"으로 처리한다.
- *  3) NO_WEIGHT_AI(원하는 AI가 없는 바코드)는 실패로 멈추지 않고 "참고" 로그만 남긴다.
- *  4) 무인식 타임아웃을 5초 → 15초로 늘렸다(실물 라벨은 길고 촘촘해서 시간이 더 필요).
- *  5) 카메라 해상도를 1920x1080 이상으로 요청하고, 디코딩용 다운스케일 상한을 960px → 1600px로 올렸다.
- *  6) 긴 가로 바코드에 맞춘 중앙 스캔 가이드선을 추가했다(index.html의 .scan-guide).
- *  7) 지원되는 기기에 한해 연속 자동초점/줌/손전등을 추가했다(기능 미지원 기기에서는 조용히 숨김).
- *  8) 세로 화면에서도 원본 해상도를 그대로 쓰고 임의로 자르지 않아, 가로로 긴 바코드의 화소가 손실되지 않게 했다.
- *  9) GS1-128 인식이 어려운 경우를 위한 OCR 보조 버튼을 추가했다("Net weight: 14,20 Kg" 문구 인식).
- * 10) OCR 결과는 자동 저장하지 않고, 직원이 화면에서 확인 후 "이 값으로 확정"을 눌러야 반영된다.
- * 11) 이번에도 DB, 로그인, 거래처, 저장 기능은 추가하지 않았다.
+ * V6 핵심 변경점(이번 요청 반영):
+ *  - 기존 GS1 파서(gs1-parser.js)와 FRIBIN 바코드 인식 로직은 전혀 건드리지 않았다.
+ *  - "화면 전체 OCR + 문맥 판정" 방식을 중단하고, 화면 중앙의 작고 가로로 긴 사각형
+ *    ("중량 X kg" 한 줄만 들어오도록)만 인식하는 방식으로 전면 교체했다.
+ *  - 그 좁은 사각형 내부를 원본(업스케일)/그레이스케일/대비강화/이진화(Otsu)/숫자전용
+ *    5가지 방식으로 각각 OCR하고, 서로 다른 결과 중 최소 2개 이상이 일치해야만 "권장"
+ *    후보로 표시한다(ocr-weight-parser.js의 combineOcrPasses). 합의가 없으면 "불확실"로
+ *    표시하고 무엇도 자동 선택하지 않는다.
+ *  - "화면 전체에서 아무 소수나 찾는" 안전망은 사용자 후보 목록에서 완전히 제거했다 —
+ *    이제 OCR 자체가 사각형 밖은 애초에 캡처하지 않는다. 사각형 내부 단어 중 소수점
+ *    있는 것만 참고용으로 개발자 패널/콘솔에만 남긴다(findFallbackNumericCandidatesForDevLogOnly).
+ *  - 사각형(guide element)의 실제 화면 위치/크기를 getBoundingClientRect()로 읽어 카메라
+ *    원본 해상도 좌표로 정확히 환산한다(object-fit:cover로 인한 크롭까지 고려) — 사각형
+ *    밖의 픽셀은 크롭 단계에서부터 아예 포함되지 않는다.
+ *  - "직접 입력"(0~100kg, 소수점 가능) 버튼을 추가했다 — 인식이 불확실하거나 실패해도
+ *    직원이 라벨 실물을 보고 직접 입력할 수 있다.
+ *  - 어떤 경로로도 자동 확정은 없다 — 항상 "이 중량으로 확정"을 직접 눌러야 한다.
  */
 
-// ── 1. 라이브러리 로드 (정확한 버전 고정, 전부 로컬 vendor 사용) ───────────
 const ZXING_WASM_VERSION = "3.1.2";
 const TESSERACT_JS_VERSION = "7.0.0";
 import { readBarcodes, prepareZXingModule } from "./vendor/zxing-wasm/reader/index.js";
 import { parseNetWeightKg } from "./gs1-parser.js";
-import { extractNetWeightFromOcrText } from "./ocr-weight-parser.js";
+import { combineOcrPasses, findFallbackNumericCandidatesForDevLogOnly } from "./ocr-weight-parser.js";
 
 prepareZXingModule({
-  overrides: {
-    locateFile: (fileName) => `./vendor/zxing-wasm/reader/${fileName}`,
-  },
+  overrides: { locateFile: (fileName) => `./vendor/zxing-wasm/reader/${fileName}` },
 });
 
-// ── 2. DOM 참조 ──────────────────────────────────────────────────────────
+// ── DOM 참조 ─────────────────────────────────────────────────────────────
 const video = document.getElementById("video");
-const canvas = document.getElementById("workCanvas"); // 화면에 보이지 않음, 저장/전송 없음
+const canvas = document.getElementById("workCanvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
-const ocrCanvas = document.getElementById("ocrCanvas"); // OCR용 캡처, 마찬가지로 저장/전송 없음
-const ocrCtx = ocrCanvas.getContext("2d", { willReadFrequently: true });
+const ocrCanvas = document.getElementById("ocrCanvas"); // 미리보기용(숨김) — 실제 크롭은 별도 캔버스에서 처리
 
 const statusEl = document.getElementById("status");
-const weightBigEl = document.getElementById("weightBig");
+const weightIdleEl = document.getElementById("weightIdle");
+const candidateListEl = document.getElementById("candidateList");
+const uncertainBannerEl = document.getElementById("uncertainBanner");
 const rawTextEl = document.getElementById("rawText");
 const elapsedEl = document.getElementById("elapsed");
+const ocrLoadTimeEl = document.getElementById("ocrLoadTime");
+const ocrRecognizeTimeEl = document.getElementById("ocrRecognizeTime");
 const successCountEl = document.getElementById("successCount");
 const failCountEl = document.getElementById("failCount");
-const rescanBtn = document.getElementById("rescanBtn");
+const confirmBtn = document.getElementById("confirmBtn");
+const retryBtn = document.getElementById("retryBtn");
+const barcodeModeBtn = document.getElementById("barcodeModeBtn");
+const ocrBtn = document.getElementById("ocrBtn");
 const startBtn = document.getElementById("startBtn");
 const logListEl = document.getElementById("logList");
 const copyLogBtn = document.getElementById("copyLogBtn");
 const cameraErrorEl = document.getElementById("cameraError");
+
+const manualEntryBtn = document.getElementById("manualEntryBtn");
+const manualEntryPanelEl = document.getElementById("manualEntryPanel");
+const manualWeightInputEl = document.getElementById("manualWeightInput");
+const manualConfirmBtn = document.getElementById("manualConfirmBtn");
+const manualCancelBtn = document.getElementById("manualCancelBtn");
 
 const devFormat = document.getElementById("devFormat");
 const devSymbology = document.getElementById("devSymbology");
@@ -58,48 +72,51 @@ const devGsFlag = document.getElementById("devGsFlag");
 const devAi = document.getElementById("devAi");
 const devRawDigits = document.getElementById("devRawDigits");
 const devFinalKg = document.getElementById("devFinalKg");
-const devElapsed = document.getElementById("devElapsed");
 const devContentType = document.getElementById("devContentType");
 const devError = document.getElementById("devError");
 const devResultCount = document.getElementById("devResultCount");
 const devCameraCaps = document.getElementById("devCameraCaps");
+const devOcrFallbackEl = document.getElementById("devOcrFallback");
 
 const torchBtn = document.getElementById("torchBtn");
 const zoomWrap = document.getElementById("zoomWrap");
 const zoomRange = document.getElementById("zoomRange");
+const scanGuideEl = document.getElementById("scanGuide");
+const scanGuideHintEl = document.getElementById("scanGuideHint");
+const ocrGuideEl = document.getElementById("ocrGuide");
+const ocrGuideHintEl = document.getElementById("ocrGuideHint");
 
-const ocrBtn = document.getElementById("ocrBtn");
-const ocrPanel = document.getElementById("ocrPanel");
-const ocrCandidateEl = document.getElementById("ocrCandidate");
-const ocrRawTextEl = document.getElementById("ocrRawText");
-const ocrConfirmBtn = document.getElementById("ocrConfirmBtn");
-const ocrCancelBtn = document.getElementById("ocrCancelBtn");
-
-// ── 3. 상태값 ────────────────────────────────────────────────────────────
+// ── 상태값 ───────────────────────────────────────────────────────────────
 let successCount = 0;
 let failCount = 0;
 let scanStartTs = 0;
-let frozen = false; // 성공/타임아웃/OCR확정으로 멈춘 상태 — "다시 스캔"을 눌러야 재개
+let frozen = false; // 후보를 찾아 검토 중이거나, 확정 직후 상태 — "다시 인식/다시 촬영"을 눌러야 재개
 let decodeInFlight = false;
 let intervalHandle = null;
 let noBarcodeTimeoutHandle = null;
 let audioCtx = null;
 let videoTrack = null;
-let streamStarted = false; // 카메라가 실제로 켜졌는지 — "대기" vs "인식 중" 상태 표시에 사용(V3 버그수정)
 let torchOn = false;
-let ocrWorkerPromise = null; // tesseract worker는 최초 OCR 버튼 클릭 시에만 생성(지연 로딩)
-const sessionLog = []; // 세션 동안의 시도 기록 (메모리에만 존재, 새로고침하면 사라짐. 서버 전송/저장 없음)
+let streamStarted = false;
+let ocrWorkerPromise = null;
+let ocrEngineReady = false; // 최초 로딩 완료 여부(로딩시간 vs 인식시간 구분용)
+let currentMode = "BARCODE"; // "BARCODE" | "OCR" — 가이드 UI와 "다시 촬영" 버튼 동작을 결정
+const sessionLog = []; // 세션 동안의 시도 기록 — 메모리에만 존재, 서버 전송/저장 없음
 
-const DECODE_INTERVAL_MS = 250; // 해상도가 올라간 만큼 살짝 여유를 둠(튜닝 가능)
-const NO_BARCODE_TIMEOUT_MS = 15000; // V3: 5초 → 15초 (실물 라벨은 길고 촘촘해 시간이 더 필요)
-const MAX_DECODE_SIDE_PX = 1600; // V3: 960 → 1600 (긴 가로 바코드가 뭉개지지 않도록)
+const DECODE_INTERVAL_MS = 250;
+const NO_BARCODE_TIMEOUT_MS = 15000;
+const MAX_DECODE_SIDE_PX = 1600;
+const OCR_UPSCALE_FACTOR = 4; // 요청사항 4: 크롭한 사각형을 2~4배 확대 후 OCR
 
-// 최근 "참고"(성공은 아니지만 뭔가 읽힌) 로그의 중복 기록을 막기 위한 캐시
+let currentCandidates = []; // 화면에 표시 중인 후보 목록
+let selectedCandidateIdx = -1;
+let pendingLogMeta = null; // 확정 시 로그에 남길 부가정보(원본문자열, AI 등)
+
 let lastRefKey = null;
 let lastRefLoggedAt = 0;
 const REF_LOG_DEDUP_MS = 1500;
 
-// ── 4. 사운드/진동 피드백 ────────────────────────────────────────────────
+// ── 사운드/진동 피드백 ────────────────────────────────────────────────────
 function unlockAudio() {
   if (!audioCtx) {
     const AC = window.AudioContext || window.webkitAudioContext;
@@ -120,17 +137,11 @@ function beep(freq = 880, durationMs = 130) {
   osc.start();
   osc.stop(audioCtx.currentTime + durationMs / 1000 + 0.02);
 }
-function successFeedback() {
-  beep(1046, 140);
-  // 아이폰 Safari는 Vibration API(navigator.vibrate)를 지원하지 않는 것으로 알려져 있음 — 실기 확인 필요.
-  if (navigator.vibrate) navigator.vibrate(200);
-}
-function failFeedback() {
-  beep(220, 220);
-  if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
-}
+function foundFeedback() { beep(1046, 110); if (navigator.vibrate) navigator.vibrate(150); }
+function confirmFeedback() { beep(1318, 140); if (navigator.vibrate) navigator.vibrate(200); }
+function failFeedback() { beep(220, 220); if (navigator.vibrate) navigator.vibrate([80, 60, 80]); }
 
-// ── 5. 카메라 시작 (V3: 고해상도 + 연속 자동초점 + 줌/손전등 감지) ─────────
+// ── 카메라 시작 ──────────────────────────────────────────────────────────
 async function startCamera() {
   unlockAudio();
   cameraErrorEl.textContent = "";
@@ -140,8 +151,6 @@ async function startCamera() {
         facingMode: { ideal: "environment" },
         width: { ideal: 1920, min: 1280 },
         height: { ideal: 1080, min: 720 },
-        // 연속 자동초점은 표준화가 덜 되어 있어 constraint로 넣어도 무시하는 브라우저가 많음 —
-        // 지원 기기에서는 아래 applyCameraCapabilities()에서 한 번 더 시도한다.
         advanced: [{ focusMode: "continuous" }],
       },
       audio: false,
@@ -151,10 +160,11 @@ async function startCamera() {
     videoTrack = stream.getVideoTracks()[0];
     streamStarted = true;
     startBtn.hidden = true;
-    ocrBtn.hidden = false; // V3 신규: 카메라가 켜진 뒤에만 OCR 보조 버튼을 노출
+    ocrBtn.hidden = false;
+    barcodeModeBtn.hidden = false;
+    manualEntryBtn.hidden = false;
     await applyCameraCapabilities();
-    resetForNextScan(true);
-    startLoop();
+    enterBarcodeMode(true);
   } catch (err) {
     cameraErrorEl.textContent =
       "카메라를 시작할 수 없습니다: " + (err && err.message ? err.message : String(err)) +
@@ -164,117 +174,132 @@ async function startCamera() {
 }
 startBtn.addEventListener("click", startCamera);
 
-// V3 신규: 연속 자동초점 재시도 + 줌/손전등 지원 여부 감지 후 UI 노출
 async function applyCameraCapabilities() {
   if (!videoTrack || typeof videoTrack.getCapabilities !== "function") {
-    devCameraCaps.textContent = "이 브라우저는 getCapabilities()를 지원하지 않음(아이폰 Safari에서 흔함) — 줌/손전등 UI 숨김";
+    devCameraCaps.textContent = "getCapabilities() 미지원(아이폰 Safari에서 흔함) — 줌/손전등 UI 숨김";
     return;
   }
   let caps;
-  try {
-    caps = videoTrack.getCapabilities();
-  } catch (e) {
+  try { caps = videoTrack.getCapabilities(); } catch (e) {
     devCameraCaps.textContent = "getCapabilities() 호출 실패: " + e.message;
     return;
   }
-
   const settings = typeof videoTrack.getSettings === "function" ? videoTrack.getSettings() : {};
-  const capsSummary = [];
-  capsSummary.push(`해상도 ${settings.width || "?"}x${settings.height || "?"}`);
+  const summary = [`해상도 ${settings.width || "?"}x${settings.height || "?"}`];
 
-  // 연속 자동초점
   if (Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous")) {
-    try {
-      await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
-      capsSummary.push("연속AF:지원");
-    } catch (e) {
-      capsSummary.push("연속AF:적용실패");
-    }
-  } else {
-    capsSummary.push("연속AF:미지원");
-  }
+    try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); summary.push("연속AF:지원"); }
+    catch (e) { summary.push("연속AF:적용실패"); }
+  } else summary.push("연속AF:미지원");
 
-  // 줌
   if (caps.zoom && typeof caps.zoom.min === "number" && typeof caps.zoom.max === "number" && caps.zoom.max > caps.zoom.min) {
-    zoomRange.min = caps.zoom.min;
-    zoomRange.max = caps.zoom.max;
-    zoomRange.step = caps.zoom.step || 0.1;
+    zoomRange.min = caps.zoom.min; zoomRange.max = caps.zoom.max; zoomRange.step = caps.zoom.step || 0.1;
     zoomRange.value = settings.zoom || caps.zoom.min;
     zoomWrap.style.display = "block";
-    capsSummary.push(`줌:지원(${caps.zoom.min}~${caps.zoom.max})`);
-  } else {
-    zoomWrap.style.display = "none";
-    capsSummary.push("줌:미지원");
-  }
+    summary.push(`줌:지원(${caps.zoom.min}~${caps.zoom.max})`);
+  } else { zoomWrap.style.display = "none"; summary.push("줌:미지원"); }
 
-  // 손전등(torch)
-  if (caps.torch === true) {
-    torchBtn.hidden = false;
-    capsSummary.push("손전등:지원");
-  } else {
-    torchBtn.hidden = true;
-    capsSummary.push("손전등:미지원");
-  }
+  if (caps.torch === true) { torchBtn.hidden = false; summary.push("손전등:지원"); }
+  else { torchBtn.hidden = true; summary.push("손전등:미지원"); }
 
-  devCameraCaps.textContent = capsSummary.join(" · ");
+  devCameraCaps.textContent = summary.join(" · ");
 }
 
 zoomRange.addEventListener("input", async () => {
   if (!videoTrack) return;
-  try {
-    await videoTrack.applyConstraints({ advanced: [{ zoom: Number(zoomRange.value) }] });
-  } catch (e) {
-    console.error("zoom apply failed", e);
-  }
+  try { await videoTrack.applyConstraints({ advanced: [{ zoom: Number(zoomRange.value) }] }); }
+  catch (e) { console.error("zoom apply failed", e); }
 });
-
 torchBtn.addEventListener("click", async () => {
   if (!videoTrack) return;
   torchOn = !torchOn;
   try {
     await videoTrack.applyConstraints({ advanced: [{ torch: torchOn }] });
     torchBtn.textContent = torchOn ? "🔦 손전등 끄기" : "🔦 손전등";
-  } catch (e) {
-    console.error("torch apply failed", e);
-    torchOn = !torchOn; // 실패 시 상태 원복
-  }
+  } catch (e) { console.error("torch apply failed", e); torchOn = !torchOn; }
 });
 
-// ── 6. 스캔 루프 ─────────────────────────────────────────────────────────
-function startLoop() {
+// ── 가이드 UI 전환 (바코드: 넓은 사각형 / OCR: 작은 가로 사각형) ───────────
+function enterBarcodeGuideUi() {
+  currentMode = "BARCODE";
+  ocrGuideEl.hidden = true;
+  ocrGuideHintEl.hidden = true;
+  scanGuideEl.style.display = "";
+  scanGuideHintEl.style.display = "";
+  retryBtn.textContent = "다시 인식";
+}
+function enterOcrGuideUi() {
+  currentMode = "OCR";
+  scanGuideEl.style.display = "none";
+  scanGuideHintEl.style.display = "none";
+  ocrGuideEl.hidden = false;
+  ocrGuideHintEl.hidden = false;
+  retryBtn.textContent = "다시 촬영";
+}
+
+// ── 바코드 모드 (1순위: GS1) ────────────────────────────────────────────
+function enterBarcodeMode(isFirst = false) {
+  frozen = false;
+  enterBarcodeGuideUi();
+  scanStartTs = performance.now();
+  clearCandidatePanel();
+  hideUncertainBanner();
+  manualEntryPanelEl.style.display = "none";
+  rawTextEl.textContent = isFirst ? "(아직 스캔 안 됨)" : "-";
+  elapsedEl.textContent = "-";
+  ocrLoadTimeEl.textContent = ocrEngineReady ? "로딩됨" : "-";
+  ocrRecognizeTimeEl.textContent = "-";
+  setStatus(streamStarted ? "인식 중" : "대기");
+  [devFormat, devSymbology, devSymbologyId, devGsFlag, devAi, devRawDigits, devFinalKg, devContentType, devError, devResultCount]
+    .forEach((el) => (el.textContent = "-"));
+  lastRefKey = null;
+
+  if (noBarcodeTimeoutHandle) clearTimeout(noBarcodeTimeoutHandle);
+  noBarcodeTimeoutHandle = setTimeout(handleNoBarcodeTimeout, NO_BARCODE_TIMEOUT_MS);
   if (intervalHandle) clearInterval(intervalHandle);
   intervalHandle = setInterval(tick, DECODE_INTERVAL_MS);
 }
+barcodeModeBtn.addEventListener("click", () => enterBarcodeMode(false));
+
+retryBtn.addEventListener("click", () => {
+  hideUncertainBanner();
+  manualEntryPanelEl.style.display = "none";
+  if (currentMode === "OCR") {
+    // 요청사항: OCR "다시 촬영"은 바코드 모드로 전환하지 않고, 사각형을 다시 맞출 수 있게
+    // 후보/배너만 초기화한다. 실제 재촬영은 "🔤 글자로 중량 찾기" 버튼을 다시 눌러 수행한다.
+    frozen = false;
+    clearCandidatePanel();
+    rawTextEl.textContent = "-";
+    elapsedEl.textContent = "-";
+    ocrRecognizeTimeEl.textContent = "-";
+    setStatus(streamStarted ? "대기 (사각형을 맞추고 다시 촬영하세요)" : "대기");
+  } else {
+    enterBarcodeMode(false);
+  }
+});
 
 async function tick() {
   if (frozen || decodeInFlight) return;
   if (video.readyState < 2) return;
   decodeInFlight = true;
   try {
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
+    const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return;
-
-    // V3: 다운스케일 상한을 960 → 1600px로 상향. 긴 변 기준으로 스케일하므로
-    // 세로로 들고 찍어도(화면 방향과 무관하게) 가로로 긴 바코드의 해상도가 보존된다.
     const scale = Math.min(1, MAX_DECODE_SIDE_PX / Math.max(vw, vh));
     canvas.width = Math.round(vw * scale);
     canvas.height = Math.round(vh * scale);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    // ↑ 이 imageData는 함수 안에서만 쓰이고 어디에도 저장/전송되지 않음. 다음 tick에서 canvas 내용은 덮어써짐.
+    // ↑ 이 imageData는 함수 안에서만 쓰이고 저장·전송되지 않음. 다음 tick에서 canvas는 덮어써짐.
 
     const results = await readBarcodes(imageData, {
-      formats: ["Code128"], // GS1-128도 Code128 심볼로지에 포함됨
+      formats: ["Code128"], // GS1-128 포함
       tryHarder: true,
       textMode: "Escaped",
       returnErrors: false,
-      maxNumberOfSymbols: 0, // V3: 한 프레임에서 여러 바코드를 전부 반환하도록(기본 제한 없음, 명시적으로 표기)
+      maxNumberOfSymbols: 0,
     });
-
-    if (results && results.length > 0) {
-      handleDecodeResults(results);
-    }
+    if (results && results.length > 0) handleBarcodeResults(results);
   } catch (e) {
     console.error("decode tick error", e);
   } finally {
@@ -282,33 +307,46 @@ async function tick() {
   }
 }
 
-// ── 7. 디코드 결과 처리 (V3: 여러 결과 중 AI 3100~3109만 성공, 나머지는 참고 로그) ──
-function handleDecodeResults(results) {
+function handleBarcodeResults(results) {
   devResultCount.textContent = String(results.length);
-
   let successPick = null;
   const referencePicks = [];
 
   for (const r of results) {
     const parsed = parseNetWeightKg(r.text);
-    if (parsed.ok) {
-      successPick = { result: r, parsed };
-      break; // 성공하는 바코드를 찾으면 그걸로 확정 (동일 프레임에 두 개 이상 성공 필드가 있을 일은 없다고 가정)
-    }
+    if (parsed.ok) { successPick = { result: r, parsed }; break; }
     referencePicks.push({ result: r, parsed });
   }
 
   if (successPick) {
-    commitSuccess(successPick.result, successPick.parsed, "BARCODE");
+    const { result, parsed } = successPick;
+    if (noBarcodeTimeoutHandle) { clearTimeout(noBarcodeTimeoutHandle); noBarcodeTimeoutHandle = null; }
+    const elapsedMs = Math.round(performance.now() - scanStartTs);
+
+    updateDevPanelLive(result, parsed, elapsedMs);
+    rawTextEl.textContent = result.text || "(빈 문자열)";
+    elapsedEl.textContent = (elapsedMs / 1000).toFixed(2) + "초";
+
+    const candidate = {
+      weightKg: parsed.weightKg,
+      weightKgText: parsed.weightKgText,
+      classification: "NET",
+      recommended: true,
+      reasonLabel: `GS1 바코드 (AI ${parsed.weightAi})`,
+      matchedText: result.text,
+      source: "BARCODE",
+    };
+    pendingLogMeta = {
+      format: result.format, symbologyIdentifier: result.symbologyIdentifier,
+      hasGs: parsed.hasGsSeparator, rawText: result.text, elapsedMs,
+    };
+    frozen = true; // 후보를 찾았으니 자동 검색은 멈추고 사람 확인을 기다림
+    foundFeedback();
+    presentCandidates([candidate], "BARCODE");
     return;
   }
 
-  // 성공한 바코드가 없으면: 전부 "참고"로만 기록하고 스캔은 계속한다(요청사항 1, 3번).
-  // 타임아웃(15초)은 취소하지 않는다 — "성공적인 중량 인식"만이 타이머를 멈춘다.
-  for (const pick of referencePicks) {
-    logReferenceOnly(pick.result, pick.parsed);
-  }
-  // 화면에는 가장 마지막으로 읽힌 것을 실시간으로 보여줘(성공 여부와 무관하게 "뭔가 읽히고 있다"는 확인용)
+  for (const pick of referencePicks) logReferenceOnly(pick.result, pick.parsed);
   if (referencePicks.length > 0) {
     const last = referencePicks[referencePicks.length - 1];
     updateDevPanelLive(last.result, last.parsed);
@@ -316,74 +354,46 @@ function handleDecodeResults(results) {
   }
 }
 
-function commitSuccess(result, parsed, source) {
-  if (noBarcodeTimeoutHandle) {
-    clearTimeout(noBarcodeTimeoutHandle);
-    noBarcodeTimeoutHandle = null;
-  }
-  const elapsedMs = Math.round(performance.now() - scanStartTs);
-
-  updateDevPanelLive(result, parsed, elapsedMs);
-  rawTextEl.textContent = result.text || "(빈 문자열)";
-  elapsedEl.textContent = (elapsedMs / 1000).toFixed(2) + "초";
-
-  const logEntry = {
-    ts: new Date().toISOString(),
-    source, // "BARCODE" | "OCR"
-    rawText: result.text,
-    format: result.format ?? null,
-    symbologyIdentifier: result.symbologyIdentifier ?? null,
-    hasGs: parsed.hasGsSeparator ?? null,
-    ok: true,
-    ai: parsed.weightAi ?? null,
-    rawDigits: parsed.rawWeightDigits ?? null,
-    weightKgText: parsed.weightKgText,
-    reason: null,
-    elapsedMs,
-  };
-  sessionLog.push(logEntry);
-  renderLogRow(logEntry);
-
-  successCount += 1;
-  successCountEl.textContent = String(successCount);
-  weightBigEl.textContent = parsed.weightKgText;
-  weightBigEl.classList.remove("fail");
-  weightBigEl.classList.add("ok");
-  setStatus("성공" + (source === "OCR" ? " (OCR 확정)" : ""));
-  successFeedback();
-
-  frozen = true;
-  rescanBtn.hidden = false;
-}
-
-// V3 신규: 성공은 아니지만 뭔가 읽힌 경우 — 멈추지 않고 "참고"로만 남김(요청사항 1, 3번)
 function logReferenceOnly(result, parsed) {
   const key = `${result.format}|${result.text}|${parsed.reason}`;
   const now = performance.now();
-  if (key === lastRefKey && now - lastRefLoggedAt < REF_LOG_DEDUP_MS) {
-    return; // 같은 내용이 짧은 시간 안에 반복되면 로그가 도배되지 않도록 건너뜀
-  }
-  lastRefKey = key;
-  lastRefLoggedAt = now;
-
+  if (key === lastRefKey && now - lastRefLoggedAt < REF_LOG_DEDUP_MS) return;
+  lastRefKey = key; lastRefLoggedAt = now;
   const elapsedMs = Math.round(performance.now() - scanStartTs);
-  const logEntry = {
-    ts: new Date().toISOString(),
-    source: "BARCODE",
-    rawText: result.text,
-    format: result.format ?? null,
-    symbologyIdentifier: result.symbologyIdentifier ?? null,
-    hasGs: parsed.hasGsSeparator ?? null,
-    ok: false,
-    ref: true, // 실패가 아니라 "참고"임을 표시 — failCount에 반영 안 됨
-    ai: parsed.weightAi ?? null,
-    rawDigits: parsed.rawWeightDigits ?? null,
-    weightKgText: null,
-    reason: parsed.reason, // 예: NO_WEIGHT_AI, INVALID_LENGTH 등
-    elapsedMs,
+  const entry = {
+    ts: new Date().toISOString(), source: "BARCODE", rawText: result.text,
+    format: result.format ?? null, symbologyIdentifier: result.symbologyIdentifier ?? null,
+    hasGs: parsed.hasGsSeparator ?? null, ok: false, ref: true,
+    ai: parsed.weightAi ?? null, rawDigits: parsed.rawWeightDigits ?? null,
+    weightKgText: null, reason: parsed.reason, elapsedMs,
   };
-  sessionLog.push(logEntry);
-  renderLogRow(logEntry);
+  sessionLog.push(entry);
+  renderLogRow(entry);
+}
+
+function handleNoBarcodeTimeout() {
+  noBarcodeTimeoutHandle = null;
+  if (frozen) return;
+  const elapsedMs = Math.round(performance.now() - scanStartTs);
+  devError.textContent = "TIMEOUT_NO_BARCODE";
+  elapsedEl.textContent = (elapsedMs / 1000).toFixed(2) + "초";
+
+  const entry = {
+    ts: new Date().toISOString(), source: "BARCODE", rawText: null, format: null,
+    symbologyIdentifier: null, hasGs: null, ok: false, ai: null, rawDigits: null,
+    weightKgText: null, reason: "TIMEOUT_NO_BARCODE", elapsedMs,
+  };
+  sessionLog.push(entry);
+  renderLogRow(entry);
+
+  failCount += 1;
+  failCountEl.textContent = String(failCount);
+  setStatus(`실패 — ${NO_BARCODE_TIMEOUT_MS / 1000}초 내 중량 인식 안 됨`);
+  failFeedback();
+  frozen = true;
+  weightIdleEl.style.display = "block";
+  weightIdleEl.textContent = "인식 실패";
+  candidateListEl.style.display = "none";
 }
 
 function updateDevPanelLive(result, parsed, elapsedMsOverride) {
@@ -395,103 +405,120 @@ function updateDevPanelLive(result, parsed, elapsedMsOverride) {
   devAi.textContent = parsed.weightAi ?? "(감지 안 됨)";
   devRawDigits.textContent = parsed.rawWeightDigits ?? "-";
   devFinalKg.textContent = parsed.ok ? parsed.weightKgText : "-";
-  devElapsed.textContent = elapsedMs + " ms";
   devContentType.textContent = result.contentType ?? "-";
   devError.textContent = result.error || (parsed.ok ? "(없음)" : parsed.reason);
 }
 
+// ── 후보 표시 / 선택 / 확정 (어떤 경로든 사람 확인 필수, 자동 확정 없음) ────
+function presentCandidates(candidates, source) {
+  currentCandidates = candidates;
+  // 요청사항: 서로 다른 전처리 결과가 합의(권장)에 이르지 못했으면, 아무것도 자동으로
+  // 선택하지 않는다 — 직원이 후보 중 하나를 직접 눌러야 "확정" 버튼이 활성화된다.
+  const recIdx = candidates.findIndex((c) => c.recommended);
+  selectedCandidateIdx = recIdx;
+
+  weightIdleEl.style.display = "none";
+  candidateListEl.style.display = "flex";
+  candidateListEl.innerHTML = "";
+
+  if (candidates.length === 0) {
+    weightIdleEl.style.display = "block";
+    candidateListEl.style.display = "none";
+    weightIdleEl.textContent = "후보 없음";
+    confirmBtn.disabled = true;
+    setStatus("실패 — 중량 후보 없음");
+    return;
+  }
+
+  candidates.forEach((c, idx) => {
+    const row = document.createElement("div");
+    row.className = "candidate-row" + (idx === selectedCandidateIdx ? " selected" : "") +
+      (c.recommended ? " recommended" : "");
+    row.innerHTML = `<span class="radio"></span><span class="val">${c.weightKgText}</span><span class="reason">${c.reasonLabel}<br/><small>[${c.source}] ${c.matchedText ?? ""}</small></span>`;
+    row.addEventListener("click", () => {
+      selectedCandidateIdx = idx;
+      Array.from(candidateListEl.children).forEach((el, i) => el.classList.toggle("selected", i === idx));
+      confirmBtn.disabled = false;
+    });
+    candidateListEl.appendChild(row);
+  });
+
+  confirmBtn.disabled = selectedCandidateIdx < 0;
+  setStatus(selectedCandidateIdx < 0 ? "확인 필요 (불확실)" : "확인 필요");
+}
+
+function clearCandidatePanel() {
+  currentCandidates = [];
+  selectedCandidateIdx = -1;
+  candidateListEl.style.display = "none";
+  candidateListEl.innerHTML = "";
+  weightIdleEl.style.display = "block";
+  weightIdleEl.textContent = "-- kg";
+  confirmBtn.disabled = true;
+}
+
+function hideUncertainBanner() {
+  uncertainBannerEl.style.display = "none";
+  uncertainBannerEl.textContent = "";
+}
+function showUncertainBanner(text) {
+  uncertainBannerEl.textContent = text;
+  uncertainBannerEl.style.display = "block";
+}
+
+confirmBtn.addEventListener("click", () => {
+  if (selectedCandidateIdx < 0 || !currentCandidates[selectedCandidateIdx]) return;
+  const c = currentCandidates[selectedCandidateIdx];
+
+  const entry = {
+    ts: new Date().toISOString(),
+    source: c.source,
+    rawText: (pendingLogMeta && pendingLogMeta.rawText) || c.matchedText || null,
+    format: (pendingLogMeta && pendingLogMeta.format) || (c.source === "OCR" ? "OCR" : c.source === "MANUAL" ? "MANUAL" : null),
+    symbologyIdentifier: (pendingLogMeta && pendingLogMeta.symbologyIdentifier) || null,
+    hasGs: (pendingLogMeta && pendingLogMeta.hasGs) || null,
+    ok: true,
+    reasonLabel: c.reasonLabel,
+    ai: null,
+    rawDigits: null,
+    weightKgText: c.weightKgText,
+    reason: null,
+    elapsedMs: (pendingLogMeta && pendingLogMeta.elapsedMs) || 0,
+  };
+  sessionLog.push(entry);
+  renderLogRow(entry);
+
+  successCount += 1;
+  successCountEl.textContent = String(successCount);
+  weightIdleEl.style.display = "block";
+  candidateListEl.style.display = "none";
+  hideUncertainBanner();
+  manualEntryPanelEl.style.display = "none";
+  weightIdleEl.textContent = `확정: ${c.weightKgText}`;
+  setStatus(`확정됨 (${c.source})`);
+  confirmFeedback();
+  confirmBtn.disabled = true;
+  pendingLogMeta = null;
+});
+
 function renderLogRow(entry) {
   const li = document.createElement("li");
-  const label = entry.ok ? "성공" : entry.ref ? "참고" : "실패";
+  const label = entry.ok ? "확정" : entry.ref ? "참고" : "실패";
   li.textContent =
     `${entry.ts.slice(11, 19)} | ${label} | [${entry.source}] ` +
-    `${entry.weightKgText ?? entry.reason ?? "-"} | ${entry.elapsedMs}ms | raw="${entry.rawText}"`;
+    `${entry.weightKgText ?? entry.reason ?? "-"}${entry.reasonLabel ? " (" + entry.reasonLabel + ")" : ""} | ${entry.elapsedMs}ms | raw="${entry.rawText}"`;
   li.className = entry.ok ? "log-ok" : entry.ref ? "log-ref" : "log-fail";
   logListEl.prepend(li);
 }
 
-// ── 8. 다시 스캔 ─────────────────────────────────────────────────────────
-function resetForNextScan(isFirst = false) {
-  frozen = false;
-  scanStartTs = performance.now();
-  rescanBtn.hidden = true;
-  ocrPanel.classList.remove("show");
-  weightBigEl.textContent = "-- kg";
-  weightBigEl.classList.remove("ok", "fail");
-  rawTextEl.textContent = isFirst ? "(아직 스캔 안 됨)" : "-";
-  elapsedEl.textContent = "-";
-  // V3 수정: 카메라가 켜져 있는 한 계속 "인식 중"이어야 한다. "대기"는 카메라 시작 버튼을
-  // 누르기 전(streamStarted=false)에만 보여준다 — 이전 버전은 최초 1회 "대기"로 고정된 뒤
-  // 참고 로그만 쌓이는 동안 상태 문구가 갱신되지 않는 사소한 표시 버그가 있었다(가짜 카메라
-  // 시퀀스 테스트로 발견, 아래 12번 항목 참고).
-  setStatus(streamStarted ? "인식 중" : "대기");
-  [devFormat, devSymbology, devSymbologyId, devGsFlag, devAi, devRawDigits, devFinalKg, devElapsed, devContentType, devError, devResultCount]
-    .forEach((el) => (el.textContent = "-"));
-  lastRefKey = null;
+function setStatus(text) { statusEl.textContent = text; statusEl.dataset.state = text; }
 
-  if (noBarcodeTimeoutHandle) clearTimeout(noBarcodeTimeoutHandle);
-  noBarcodeTimeoutHandle = setTimeout(handleNoBarcodeTimeout, NO_BARCODE_TIMEOUT_MS);
-}
-rescanBtn.addEventListener("click", () => resetForNextScan(false));
-
-// ── 8-b. 15초 무인식(=무성공) 타임아웃 ─────────────────────────────────────
-// V3: "바코드가 전혀 안 잡힘"이 아니라 "15초 동안 AI 3100~3109를 포함한 성공적인
-// 중량 인식이 없었음"을 뜻한다 — 그 사이 일반 바코드(예: 위쪽 25789003)는 여러 번
-// 읽혔을 수 있고, 그것들은 참고 로그로 남아있다. 로그 사유 코드는 기존과 동일하게
-// TIMEOUT_NO_BARCODE를 유지한다(요청하신 원래 로그 형식과의 호환을 위해).
-function handleNoBarcodeTimeout() {
-  noBarcodeTimeoutHandle = null;
-  if (frozen) return;
-
-  const elapsedMs = Math.round(performance.now() - scanStartTs);
-  devElapsed.textContent = elapsedMs + " ms";
-  devError.textContent = "TIMEOUT_NO_BARCODE";
-
-  elapsedEl.textContent = (elapsedMs / 1000).toFixed(2) + "초";
-
-  const logEntry = {
-    ts: new Date().toISOString(),
-    source: "BARCODE",
-    rawText: null,
-    format: null,
-    symbologyIdentifier: null,
-    hasGs: null,
-    ok: false,
-    ai: null,
-    rawDigits: null,
-    weightKgText: null,
-    reason: "TIMEOUT_NO_BARCODE",
-    elapsedMs,
-  };
-  sessionLog.push(logEntry);
-  renderLogRow(logEntry);
-
-  failCount += 1;
-  failCountEl.textContent = String(failCount);
-  weightBigEl.textContent = "인식 실패";
-  weightBigEl.classList.remove("ok");
-  weightBigEl.classList.add("fail");
-  setStatus(`실패 — ${NO_BARCODE_TIMEOUT_MS / 1000}초 내 중량 인식 안 됨`);
-  failFeedback();
-
-  frozen = true;
-  rescanBtn.hidden = false;
-}
-
-function setStatus(text) {
-  statusEl.textContent = text;
-  statusEl.dataset.state = text;
-}
-
-// ── 9. 테스트 로그 복사 (요구사항 외 편의 기능) ────────────────────────────
 copyLogBtn.addEventListener("click", async () => {
-  const header = "번호\t시각\t결과\t경로\t중량/사유\t소요시간\t포맷\t심볼로지ID\tGS포함\t원본문자열\n";
-  const text = sessionLog
-    .map((e, i) => {
-      const label = e.ok ? "성공" : e.ref ? "참고" : "실패";
-      return `${i + 1}\t${e.ts}\t${label}\t${e.source}\t${e.weightKgText ?? e.reason ?? ""}\t${e.elapsedMs}ms\t${e.format}\t${e.symbologyIdentifier}\t${e.hasGs}\t${e.rawText}`;
-    })
-    .join("\n");
+  const header = "번호\t시각\t결과\t경로\t중량/사유\t근거\t소요시간\t원본문자열\n";
+  const text = sessionLog.map((e, i) => {
+    const label = e.ok ? "확정" : e.ref ? "참고" : "실패";
+    return `${i + 1}\t${e.ts}\t${label}\t${e.source}\t${e.weightKgText ?? e.reason ?? ""}\t${e.reasonLabel ?? ""}\t${e.elapsedMs}ms\t${e.rawText}`;
+  }).join("\n");
   try {
     await navigator.clipboard.writeText(header + text);
     copyLogBtn.textContent = "복사됨 ✓ (붙여넣기 해서 사용하세요)";
@@ -501,82 +528,340 @@ copyLogBtn.addEventListener("click", async () => {
   }
 });
 
-// ── 10. OCR 보조 인식 (V3 신규) ─────────────────────────────────────────
-// GS1-128 인식이 어려운 경우를 위한 보조 수단. 라벨에 인쇄된 "Net weight: 14,20 Kg" 문구를
-// 읽는다. 무겁기 때문에(약 18MB) 처음 버튼을 눌렀을 때만 라이브러리를 불러온다(지연 로딩).
-// 결과는 직원이 "이 값으로 확정"을 눌러야만 반영된다 — 자동 저장 없음(요청사항 10).
-ocrBtn.addEventListener("click", async () => {
-  frozen = true; // 바코드 스캔 루프 일시 정지
-  if (noBarcodeTimeoutHandle) {
-    clearTimeout(noBarcodeTimeoutHandle);
-    noBarcodeTimeoutHandle = null;
+// ── 직접 입력 (요청사항 15: 0~100kg, 소수점 가능) ──────────────────────
+manualEntryBtn.addEventListener("click", () => {
+  frozen = true;
+  if (noBarcodeTimeoutHandle) { clearTimeout(noBarcodeTimeoutHandle); noBarcodeTimeoutHandle = null; }
+  if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
+  hideUncertainBanner();
+  manualEntryPanelEl.style.display = "block";
+  manualWeightInputEl.value = "";
+  manualWeightInputEl.focus();
+});
+manualCancelBtn.addEventListener("click", () => {
+  manualEntryPanelEl.style.display = "none";
+});
+manualConfirmBtn.addEventListener("click", () => {
+  const raw = manualWeightInputEl.value;
+  const v = Number(raw);
+  if (!raw || !Number.isFinite(v) || v <= 0 || v > 100) {
+    alert("0보다 크고 100 이하의 숫자를 kg 단위로 입력해 주세요 (예: 9.4)");
+    return;
   }
-  ocrPanel.classList.add("show");
-  ocrCandidateEl.textContent = "OCR 엔진을 불러오는 중... (최초 1회, 네트워크 상태에 따라 다소 걸릴 수 있음)";
-  ocrRawTextEl.textContent = "-";
-  ocrConfirmBtn.disabled = true;
+  const c = {
+    weightKg: v,
+    weightKgText: `${v}kg`,
+    classification: "MANUAL",
+    recommended: false,
+    reasonLabel: "직원 직접 입력 (인식 결과 아님)",
+    matchedText: raw,
+    source: "MANUAL",
+  };
+  pendingLogMeta = { rawText: `직접입력:${raw}`, elapsedMs: 0 };
+  presentCandidates([c], "MANUAL");
+  selectedCandidateIdx = 0;
+  Array.from(candidateListEl.children).forEach((el, i) => el.classList.toggle("selected", i === 0));
+  confirmBtn.disabled = false;
+  manualEntryPanelEl.style.display = "none";
+  hideUncertainBanner();
+  setStatus("확인 필요 (직접 입력)");
+});
+
+// ── OCR 영역 계산: 화면에 보이는 작은 사각형(#ocrGuide)의 실제 위치/크기를
+//    그대로 읽어 카메라 원본 해상도 좌표로 환산한다. video는 CSS object-fit:cover로
+//    렌더링되므로, 비디오 원본 종횡비가 컨테이너와 다르면 위/아래 또는 좌/우가 잘려서
+//    보인다 — 그 잘린 만큼을 보정해야 "사각형 안에 실제로 보이는 부분"과 "크롭되는
+//    픽셀"이 정확히 일치한다(요청사항 3: 사각형 밖은 아예 처리하지 않음).
+function getOcrRoiNative() {
+  const videoRect = video.getBoundingClientRect();
+  const guideRect = ocrGuideEl.getBoundingClientRect();
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh || videoRect.width === 0 || videoRect.height === 0) return null;
+
+  const fracLeft = (guideRect.left - videoRect.left) / videoRect.width;
+  const fracTop = (guideRect.top - videoRect.top) / videoRect.height;
+  const fracW = guideRect.width / videoRect.width;
+  const fracH = guideRect.height / videoRect.height;
+
+  const containerAspect = videoRect.width / videoRect.height;
+  const videoAspect = vw / vh;
+  let visX, visY, visW, visH;
+  if (videoAspect > containerAspect) {
+    // 비디오가 컨테이너보다 가로로 넓다 → 좌우가 잘려서 보인다
+    visH = vh; visW = vh * containerAspect; visX = (vw - visW) / 2; visY = 0;
+  } else {
+    // 비디오가 컨테이너보다 세로로 길다(또는 같다) → 위아래가 잘려서 보인다
+    visW = vw; visH = vw / containerAspect; visX = 0; visY = (vh - visH) / 2;
+  }
+
+  const roiX = Math.round(visX + fracLeft * visW);
+  const roiY = Math.round(visY + fracTop * visH);
+  const roiW = Math.max(1, Math.round(fracW * visW));
+  const roiH = Math.max(1, Math.round(fracH * visH));
+  return { roiX, roiY, roiW, roiH };
+}
+
+// ── 이미지 전처리 (요청사항 4·5: 업스케일 + 원본/그레이스케일/대비강화/이진화) ──
+function makeUpscaledCanvas(sourceCanvas, factor) {
+  const w = Math.max(1, Math.round(sourceCanvas.width * factor));
+  const h = Math.max(1, Math.round(sourceCanvas.height * factor));
+  const out = document.createElement("canvas");
+  out.width = w; out.height = h;
+  const octx = out.getContext("2d");
+  octx.imageSmoothingEnabled = true;
+  octx.imageSmoothingQuality = "high";
+  octx.drawImage(sourceCanvas, 0, 0, w, h);
+  return out;
+}
+
+function toGrayscaleCanvas(sourceCanvas) {
+  const w = sourceCanvas.width, h = sourceCanvas.height;
+  const sctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+  const imageData = sctx.getImageData(0, 0, w, h);
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    d[i] = d[i + 1] = d[i + 2] = gray;
+  }
+  const out = document.createElement("canvas");
+  out.width = w; out.height = h;
+  out.getContext("2d").putImageData(imageData, 0, 0);
+  return out;
+}
+
+function toContrastEnhancedCanvas(grayCanvas, extraFactor = 1.6) {
+  const w = grayCanvas.width, h = grayCanvas.height;
+  const gctx = grayCanvas.getContext("2d", { willReadFrequently: true });
+  const imageData = gctx.getImageData(0, 0, w, h);
+  const d = imageData.data;
+  let min = 255, max = 0;
+  for (let i = 0; i < d.length; i += 4) { if (d[i] < min) min = d[i]; if (d[i] > max) max = d[i]; }
+  const range = Math.max(1, max - min);
+  for (let i = 0; i < d.length; i += 4) {
+    let v = (d[i] - min) * (255 / range); // 히스토그램 스트레치
+    v = 128 + (v - 128) * extraFactor; // 추가 대비 강화
+    v = Math.max(0, Math.min(255, v));
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  const out = document.createElement("canvas");
+  out.width = w; out.height = h;
+  out.getContext("2d").putImageData(imageData, 0, 0);
+  return out;
+}
+
+// Otsu's method — 그레이스케일 히스토그램에서 클래스 간 분산이 최대가 되는 임계값을 찾는다.
+function otsuThreshold(grayImageData, w, h) {
+  const d = grayImageData.data;
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < d.length; i += 4) hist[d[i]]++;
+  const total = w * h;
+  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, maxVar = -1, threshold = 127;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const varBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (varBetween > maxVar) { maxVar = varBetween; threshold = t; }
+  }
+  return threshold;
+}
+
+function toBinarizedCanvas(grayCanvas) {
+  const w = grayCanvas.width, h = grayCanvas.height;
+  const gctx = grayCanvas.getContext("2d", { willReadFrequently: true });
+  const imageData = gctx.getImageData(0, 0, w, h);
+  const th = otsuThreshold(imageData, w, h);
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = d[i] >= th ? 255 : 0;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  const out = document.createElement("canvas");
+  out.width = w; out.height = h;
+  out.getContext("2d").putImageData(imageData, 0, 0);
+  return out;
+}
+
+// ── OCR 모드 (2순위: 라벨 문자, 사각형 내부 전용 + 다중 전처리 합의) ───────
+async function runOcrPass(worker, passCanvas, passName) {
+  const t0 = performance.now();
+  const { data } = await worker.recognize(passCanvas, {}, { text: true, blocks: true });
+  const ms = Math.round(performance.now() - t0);
+  const words = flattenTesseractWords(data.blocks);
+  return { passName, text: data.text || "", words, ms };
+}
+
+function devOcrFallbackLog(devFallback, passResults) {
+  console.log("[OCR dev] 사각형 내부 전처리별 원문:", passResults.map((p) => ({ pass: p.passName, text: p.text, ms: p.ms })));
+  console.log("[OCR dev] 사각형 내부 소수 안전망(개발자 로그 전용 — 사용자 후보로 노출되지 않음):", devFallback);
+  if (devOcrFallbackEl) {
+    devOcrFallbackEl.textContent = devFallback.length
+      ? devFallback.map((d) => d.weightKgText).join(", ") + " (참고용 — 사용자 후보 아님)"
+      : "(없음)";
+  }
+}
+
+ocrBtn.addEventListener("click", async () => {
+  frozen = true;
+  if (noBarcodeTimeoutHandle) { clearTimeout(noBarcodeTimeoutHandle); noBarcodeTimeoutHandle = null; }
+  if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
+
+  enterOcrGuideUi();
+  clearCandidatePanel();
+  hideUncertainBanner();
+  manualEntryPanelEl.style.display = "none";
+  weightIdleEl.style.display = "block";
+  weightIdleEl.textContent = "OCR 준비 중...";
+  setStatus("인식 중");
+  rawTextEl.textContent = "-";
 
   try {
+    const loadStart = performance.now();
     const worker = await getOcrWorker();
+    const loadMs = Math.round(performance.now() - loadStart);
+    ocrLoadTimeEl.textContent = ocrEngineReady && loadMs < 50 ? "이미 로딩됨" : loadMs + "ms";
+    ocrEngineReady = true;
 
-    // 라벨 하단부(중량 문구가 인쇄된 영역)를 캡처. 화면 전체가 아니라 비디오 프레임 그대로 사용(1차 버전은
-    // 영역 자동 지정 없이 전체 프레임을 넘기고, 필요하면 D-2 설계처럼 ROI 지정을 다음 단계에서 추가한다.
-    ocrCanvas.width = video.videoWidth;
-    ocrCanvas.height = video.videoHeight;
-    ocrCtx.drawImage(video, 0, 0, ocrCanvas.width, ocrCanvas.height);
-    // ↑ 이 캔버스 내용은 OCR 처리에만 쓰이고 저장되거나 서버로 전송되지 않는다. 다음 시도에서 덮어써진다.
+    // 요청사항 3: 사각형(#ocrGuide) 내부만 원본 해상도로 크롭한다 — 그 밖은 처리하지 않는다.
+    const roi = getOcrRoiNative();
+    if (!roi) throw new Error("카메라 영상 크기를 아직 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.");
 
-    ocrCandidateEl.textContent = "글자 인식 중...";
-    const ocrStart = performance.now();
-    const { data } = await worker.recognize(ocrCanvas);
-    const ocrElapsedMs = Math.round(performance.now() - ocrStart);
+    const rawCropCanvas = document.createElement("canvas");
+    rawCropCanvas.width = roi.roiW;
+    rawCropCanvas.height = roi.roiH;
+    rawCropCanvas.getContext("2d").drawImage(video, roi.roiX, roi.roiY, roi.roiW, roi.roiH, 0, 0, roi.roiW, roi.roiH);
+    // ↑ 캡처한 사각형 내부 영역은 OCR 처리에만 쓰이고 저장·전송되지 않음. 다음 시도에서 캔버스는 덮어써짐.
 
-    const parsed = extractNetWeightFromOcrText(data.text);
-    ocrRawTextEl.textContent = `OCR 원문(${ocrElapsedMs}ms): ${data.text || "(인식된 글자 없음)"}`;
+    // 요청사항 4: 2~4배 확대(여기서는 3배) 후, 요청사항 5: 4가지 전처리 버전을 만든다.
+    const baseCanvas = makeUpscaledCanvas(rawCropCanvas, OCR_UPSCALE_FACTOR);
+    const grayCanvas = toGrayscaleCanvas(baseCanvas);
+    const contrastCanvas = toContrastEnhancedCanvas(grayCanvas);
+    const binarizedCanvas = toBinarizedCanvas(grayCanvas);
 
-    if (parsed.ok) {
-      ocrCandidateEl.textContent = `후보값: ${parsed.weightKgText}`;
-      ocrConfirmBtn.disabled = false;
-      ocrConfirmBtn.dataset.weightKgText = parsed.weightKgText;
-      ocrConfirmBtn.dataset.rawText = data.text || "";
+    // 미리보기 캔버스(숨김, 저장/전송 없음)에 대비강화본을 표시해 개발 확인용으로만 남긴다.
+    ocrCanvas.width = contrastCanvas.width; ocrCanvas.height = contrastCanvas.height;
+    ocrCanvas.getContext("2d").drawImage(contrastCanvas, 0, 0);
+
+    const recognizeStart = performance.now();
+    const passResults = [];
+
+    weightIdleEl.textContent = "글자 인식 중 (원본, 1/5)...";
+    passResults.push(await runOcrPass(worker, baseCanvas, "원본"));
+
+    weightIdleEl.textContent = "글자 인식 중 (그레이스케일, 2/5)...";
+    passResults.push(await runOcrPass(worker, grayCanvas, "그레이스케일"));
+
+    weightIdleEl.textContent = "글자 인식 중 (대비강화, 3/5)...";
+    passResults.push(await runOcrPass(worker, contrastCanvas, "대비강화"));
+
+    weightIdleEl.textContent = "글자 인식 중 (이진화, 4/5)...";
+    passResults.push(await runOcrPass(worker, binarizedCanvas, "이진화"));
+
+    // 요청사항 7: 숫자/단위 위주 인식을 위한 화이트리스트 전용 패스(5번째).
+    weightIdleEl.textContent = "글자 인식 중 (숫자전용, 5/5)...";
+    try {
+      await worker.setParameters({ tessedit_char_whitelist: "0123456789.,kgKG" });
+      passResults.push(await runOcrPass(worker, contrastCanvas, "숫자전용"));
+    } finally {
+      await worker.setParameters({ tessedit_char_whitelist: "" });
+    }
+
+    const recognizeMs = Math.round(performance.now() - recognizeStart);
+    ocrRecognizeTimeEl.textContent = recognizeMs + "ms (전처리 5개 합산)";
+
+    rawTextEl.textContent = passResults
+      .map((p) => `[${p.passName}] ${(p.text || "").replace(/\s+/g, " ").trim() || "(없음)"}`)
+      .join("  ");
+
+    // 요청사항 10·11: combineOcrPasses가 "최소 2개 이상 서로 다른 패스가 일치"할 때만 권장.
+    const combined = combineOcrPasses(passResults.map((p) => ({ passName: p.passName, text: p.text })));
+
+    // 요청사항: 화면 전체 안전망은 사용자 후보로 노출하지 않는다 — 사각형 내부 단어 중
+    // 소수점 있는 것만 개발자 패널/콘솔 로그에만 참고용으로 남긴다.
+    const allWords = passResults.flatMap((p) => p.words);
+    const devFallback = findFallbackNumericCandidatesForDevLogOnly(allWords);
+    devOcrFallbackLog(devFallback, passResults);
+
+    pendingLogMeta = {
+      rawText: passResults.map((p) => `${p.passName}:${p.text}`).join(" | "),
+      elapsedMs: recognizeMs,
+    };
+
+    const candidates = combined.candidates.map((c) => ({
+      weightKg: c.weightKg,
+      weightKgText: c.weightKgText,
+      classification: c.recommended ? "NET" : "UNCONFIRMED",
+      recommended: c.recommended,
+      reasonLabel: `${c.votes}/5 패스 일치 (${c.passNames.join(", ")})`,
+      matchedText: c.weightKgText,
+      source: "OCR",
+    }));
+
+    presentCandidates(candidates, "OCR");
+
+    if (candidates.length === 0) {
+      failCount += 1;
+      failCountEl.textContent = String(failCount);
+      failFeedback();
+      showUncertainBanner("⚠ 사각형 안에서 숫자를 찾지 못했습니다 — 사각형을 '중량 X kg' 행에 맞추고 다시 촬영하거나, 아래 '직접 입력'을 사용해 주세요.");
+    } else if (combined.uncertain) {
+      // 요청사항 12: 합의가 없으면 "인식 결과가 불확실합니다" + 전체 후보 + 다시 촬영 + 직접 입력.
+      showUncertainBanner("⚠ 인식 결과가 불확실합니다 — 전처리 결과들이 서로 다른 값을 보였습니다. 아래 후보를 라벨 실물과 비교해 직접 선택하거나, 다시 촬영하거나, 직접 입력해 주세요.");
     } else {
-      ocrCandidateEl.textContent = `중량 문구를 찾지 못했습니다 (${parsed.reason}). 아래 원문을 참고해 다시 촬영해 주세요.`;
-      ocrConfirmBtn.disabled = true;
+      hideUncertainBanner();
+      foundFeedback();
     }
   } catch (e) {
+    // 요청사항: OCR 오류가 발생해도 기존 바코드 스캔 기능은 계속 작동해야 한다.
     console.error("OCR error", e);
-    ocrCandidateEl.textContent = "OCR 처리 중 오류가 발생했습니다: " + (e.message || String(e));
-    ocrConfirmBtn.disabled = true;
+    weightIdleEl.style.display = "block";
+    candidateListEl.style.display = "none";
+    weightIdleEl.textContent = "OCR 오류 발생";
+    rawTextEl.textContent = "OCR 처리 중 오류: " + (e.message || String(e)) + " — '바코드로 중량 찾기'를 눌러 계속 스캔하거나 '직접 입력'을 사용하세요.";
+    setStatus("실패 — OCR 오류");
+    confirmBtn.disabled = true;
+    failFeedback();
   }
 });
 
-ocrConfirmBtn.addEventListener("click", () => {
-  const weightKgText = ocrConfirmBtn.dataset.weightKgText;
-  if (!weightKgText) return;
-  // OCR 결과는 실제 "바코드 result" 객체가 없으므로, 로그 형식을 맞추기 위한 최소 형태로 구성
-  const fakeResult = { text: ocrConfirmBtn.dataset.rawText || "", format: "OCR", symbologyIdentifier: "", contentType: "OCR", error: "" };
-  const fakeParsed = { ok: true, weightKgText, hasGsSeparator: false, weightAi: null, rawWeightDigits: null };
-  ocrPanel.classList.remove("show");
-  commitSuccess(fakeResult, fakeParsed, "OCR");
-});
-
-ocrCancelBtn.addEventListener("click", () => {
-  ocrPanel.classList.remove("show");
-  resetForNextScan(false);
-});
+// tesseract.js v7의 recognize({blocks:true}) 결과는 blocks[].paragraphs[].lines[].words[]
+// 계층 구조로 온다(과거 버전의 평평한 data.words 배열과 다름) — 평평하게 펼쳐서 쓴다.
+function flattenTesseractWords(blocks) {
+  const out = [];
+  if (!Array.isArray(blocks)) return out;
+  for (const b of blocks) {
+    for (const p of b.paragraphs || []) {
+      for (const l of p.lines || []) {
+        for (const w of l.words || []) {
+          out.push({ text: w.text, confidence: w.confidence, bbox: w.bbox });
+        }
+      }
+    }
+  }
+  return out;
+}
 
 async function getOcrWorker() {
   if (!ocrWorkerPromise) {
     ocrWorkerPromise = (async () => {
       const mod = await import("./vendor/tesseract/tesseract.esm.min.js");
       const Tesseract = mod.default;
-      const worker = await Tesseract.createWorker("eng", 1 /* OEM.LSTM_ONLY */, {
+      // 한국어(kor)와 영어(eng)를 함께 로드해 두 언어가 섞인 라벨을 지원한다. 언어 순서는
+      // "kor"를 먼저 두었다 — 실측 결과 ["kor","eng"] 순서가 한글 숫자 인식과 영어 라벨
+      // 인식 모두에서 더 나은 결과를 보였다(자세한 비교는 README 참고).
+      const worker = await Tesseract.createWorker(["kor", "eng"], 1 /* OEM.LSTM_ONLY */, {
         workerPath: "./vendor/tesseract/worker.min.js",
         corePath: "./vendor/tesseract/tesseract-core-simd-lstm.wasm.js",
-        langPath: "./vendor/tesseract/lang-eng",
+        langPath: "./vendor/tesseract/lang-data",
         gzip: true,
         logger: () => {},
       });
+      // 페이지 분할 모드(PSM) 실험: 7(단일 줄) 고정은 오히려 소수점을 더 자주 놓쳤다
+      // (기본값 3이 이 좁은 크롭에서 더 나은 결과를 보임) — 기본값을 유지한다.
       return worker;
     })();
   }

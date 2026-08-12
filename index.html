@@ -3,19 +3,11 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-<title>FRIBIN 중량 스캔 POC (정솔푸드 기술검증용)</title>
+<title>박스 중량 스캔 POC (정솔푸드 기술검증용)</title>
 <style>
   :root {
-    --bg: #0f1620;
-    --panel: #16202c;
-    --panel-2: #1c2836;
-    --text: #eef3f8;
-    --muted: #93a4b8;
-    --accent: #2f7cf6;
-    --ok: #21c471;
-    --fail: #ef4444;
-    --warn: #f6b93b;
-    --ref: #6c7f96;
+    --bg: #0f1620; --panel: #16202c; --panel-2: #1c2836; --text: #eef3f8; --muted: #93a4b8;
+    --accent: #2f7cf6; --ok: #21c471; --fail: #ef4444; --warn: #f6b93b; --ref: #6c7f96;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
@@ -24,24 +16,24 @@
   h1 { font-size: 17px; margin: 4px 0 2px; color: var(--muted); font-weight: 600; }
   .subtitle { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
 
-  /* V3: 긴 가로 바코드 대응을 위해 세로 화면에서도 카메라 영역을 넓게(더 낮은 종횡비) 확보 */
   .camera-wrap { position: relative; width: 100%; aspect-ratio: 4/3; background: #000;
     border-radius: 14px; overflow: hidden; border: 2px solid #26364a; }
   video { width: 100%; height: 100%; object-fit: cover; display: block; }
-  #workCanvas, #ocrCanvas { display: none; } /* 화면에 표시하지 않음 — 저장/전송 없이 픽셀 읽기 전용 */
+  #workCanvas, #ocrCanvas { display: none; } /* 저장/전송 없이 픽셀 읽기 전용 */
 
   .status-badge { position: absolute; top: 10px; left: 10px; padding: 6px 14px;
     border-radius: 999px; font-weight: 700; font-size: 14px; background: #000a; z-index: 5; }
   .status-badge[data-state="대기"] { color: var(--muted); }
   .status-badge[data-state="인식 중"] { color: var(--warn); }
-  .status-badge[data-state^="성공"] { color: var(--ok); }
+  .status-badge[data-state^="확인 필요"] { color: var(--warn); }
+  .status-badge[data-state^="확정"] { color: var(--ok); }
   .status-badge[data-state^="실패"] { color: var(--fail); }
 
-  /* V3 신규: 긴 가로 바코드 안내선 (실제 스캔 영역을 자르는 것이 아니라 시각적 가이드) */
+  /* 바코드용 넓은 가이드 (기존 그대로) */
   .scan-guide { position: absolute; left: 4%; right: 4%; top: 50%; height: 34%;
     transform: translateY(-50%); border: 2px solid rgba(255,255,255,0.55); border-radius: 8px;
     pointer-events: none; z-index: 3; }
-  .scan-guide::before, .scan-guide::after { content: ""; position: absolute; top: 50%; left: 0; right: 0;
+  .scan-guide::before { content: ""; position: absolute; top: 50%; left: 0; right: 0;
     height: 1px; background: rgba(255,80,80,0.85); transform: translateY(-50%); }
   .scan-guide .corner { position: absolute; width: 20px; height: 20px; border-color: #21c471; }
   .scan-guide .tl { top: -2px; left: -2px; border-top: 4px solid; border-left: 4px solid; }
@@ -51,10 +43,23 @@
   .scan-guide-hint { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center;
     font-size: 12px; color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; z-index: 3; }
 
+  /* OCR용 — 가로로 긴 "작은" 사각형. 라벨의 "중량 X kg" 한 줄만 들어오도록 좁게 설계.
+     이 사각형의 실제 화면상 위치/크기(getBoundingClientRect)를 app.js가 그대로 읽어서
+     카메라 원본 좌표로 환산하므로, 아래 수치를 바꾸면 앱 동작도 자동으로 맞춰진다. */
+  .ocr-guide { position: absolute; left: 28%; right: 28%; top: 50%; height: 22%;
+    transform: translateY(-50%); border: 3px solid var(--warn); border-radius: 10px;
+    pointer-events: none; z-index: 3; box-shadow: 0 0 0 2000px rgba(0,0,0,0.35); }
+  .ocr-guide .corner { position: absolute; width: 16px; height: 16px; border-color: #fff; }
+  .ocr-guide .tl { top: -3px; left: -3px; border-top: 3px solid; border-left: 3px solid; }
+  .ocr-guide .tr { top: -3px; right: -3px; border-top: 3px solid; border-right: 3px solid; }
+  .ocr-guide .bl { bottom: -3px; left: -3px; border-bottom: 3px solid; border-left: 3px solid; }
+  .ocr-guide .br { bottom: -3px; right: -3px; border-bottom: 3px solid; border-right: 3px solid; }
+  .ocr-guide-hint { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center;
+    font-size: 13px; font-weight: 700; color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; z-index: 4; }
+
   #startBtn { position: absolute; inset: 0; width: 100%; height: 100%; border: 0;
     background: rgba(0,0,0,0.55); color: #fff; font-size: 22px; font-weight: 800; cursor: pointer; z-index: 10; }
 
-  /* V3 신규: 줌/손전등 컨트롤 — 기기가 지원할 때만 화면에 나타남(js에서 hidden 해제) */
   .camera-controls { position: absolute; right: 8px; bottom: 8px; display: flex; flex-direction: column;
     gap: 8px; z-index: 6; }
   .camera-controls button { background: #000a; color: #fff; border: 1px solid #ffffff40; border-radius: 10px;
@@ -62,16 +67,27 @@
   #zoomWrap { position: absolute; left: 8px; bottom: 8px; right: 90px; z-index: 6; display: none; }
   #zoomRange { width: 100%; }
 
-  .weight-panel { margin-top: 14px; background: var(--panel); border-radius: 14px; padding: 18px;
-    text-align: center; }
-  #weightBig { font-size: 56px; font-weight: 900; letter-spacing: 0.5px; line-height: 1.1; }
-  #weightBig.ok { color: var(--ok); }
-  #weightBig.fail { color: var(--fail); }
+  .weight-panel { margin-top: 14px; background: var(--panel); border-radius: 14px; padding: 18px; }
+  .weight-panel-idle { text-align: center; font-size: 40px; font-weight: 900; color: var(--muted); }
 
-  .meta-row { display: flex; justify-content: space-around; margin-top: 10px; font-size: 13px; color: var(--muted); }
-  .meta-row b { display: block; color: var(--text); font-size: 18px; }
+  #uncertainBanner { display: none; background: #3a2c10; border: 1px solid var(--warn); color: #ffd98a;
+    border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 10px; line-height: 1.5; }
 
-  .raw-row { margin-top: 10px; font-size: 13px; color: var(--muted); word-break: break-all; }
+  #candidateList { display: flex; flex-direction: column; gap: 8px; }
+  .candidate-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+    border-radius: 12px; border: 2px solid #2a3c52; background: var(--panel-2); cursor: pointer; }
+  .candidate-row.selected { border-color: var(--accent); background: #1b2c47; }
+  .candidate-row .val { font-size: 26px; font-weight: 900; min-width: 110px; }
+  .candidate-row.recommended .val { color: var(--ok); }
+  .candidate-row.excluded .val { color: var(--muted); text-decoration: line-through; }
+  .candidate-row .reason { font-size: 12.5px; color: var(--muted); flex: 1; }
+  .candidate-row .radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--muted); flex-shrink: 0; }
+  .candidate-row.selected .radio { border-color: var(--accent); background: var(--accent); }
+
+  .meta-row { display: flex; justify-content: space-around; margin-top: 12px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; gap: 6px; }
+  .meta-row b { display: block; color: var(--text); font-size: 17px; }
+
+  .raw-row { margin-top: 10px; font-size: 12.5px; color: var(--muted); word-break: break-all; }
   .raw-row code { color: #cfe3ff; background: #0c1420; padding: 4px 8px; border-radius: 8px; display: inline-block; margin-top: 4px; }
 
   .counters { display: flex; gap: 10px; margin-top: 14px; }
@@ -81,25 +97,31 @@
   .counter-box.fail .n { color: var(--fail); }
   .counter-box .label { font-size: 12px; color: var(--muted); }
 
-  /* 장갑 낀 상태를 가정한 큰 버튼 */
-  button.big { width: 100%; margin-top: 14px; padding: 20px; font-size: 20px; font-weight: 800;
+  button.big { width: 100%; padding: 20px; font-size: 19px; font-weight: 800;
     border: 0; border-radius: 14px; cursor: pointer; }
-  #rescanBtn { background: var(--accent); color: #fff; }
-  #rescanBtn[hidden] { display: none; }
+  .action-row { display: flex; gap: 10px; margin-top: 14px; }
+  .action-row button { flex: 1; }
+  #confirmBtn { background: var(--ok); color: #06210f; }
+  #confirmBtn:disabled { background: #2a3c34; color: #5c6f68; cursor: not-allowed; }
+  #retryBtn { background: var(--panel-2); color: var(--text); border: 1px solid #33465e; }
 
-  #ocrBtn { background: var(--panel-2); color: var(--text); border: 1px solid #33465e; }
-  #ocrBtn[hidden] { display: none; }
+  .manual-row { margin-top: 10px; }
+  #manualEntryBtn { background: var(--panel-2); color: var(--text); border: 1px dashed #4a5f7a; }
 
-  .ocr-panel { margin-top: 14px; background: var(--panel); border-radius: 14px; padding: 16px; display: none; }
-  .ocr-panel.show { display: block; }
-  .ocr-panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--warn); }
-  .ocr-candidate { font-size: 40px; font-weight: 900; text-align: center; margin: 10px 0; color: var(--warn); }
-  .ocr-raw { font-size: 12px; color: var(--muted); background: #0c1420; padding: 8px; border-radius: 8px;
-    word-break: break-all; max-height: 90px; overflow-y: auto; }
-  .ocr-actions { display: flex; gap: 8px; margin-top: 12px; }
-  .ocr-actions button { flex: 1; padding: 16px; font-size: 16px; font-weight: 800; border: 0; border-radius: 12px; }
-  #ocrConfirmBtn { background: var(--ok); color: #06210f; }
-  #ocrCancelBtn { background: #2a2a2a; color: #fff; }
+  #manualEntryPanel { display: none; margin-top: 10px; background: var(--panel-2); border-radius: 12px;
+    padding: 14px; border: 1px solid #33465e; }
+  #manualEntryPanel label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  #manualWeightInput { width: 100%; padding: 12px; font-size: 20px; border-radius: 10px; border: 1px solid #33465e;
+    background: #0c1420; color: var(--text); margin-bottom: 10px; }
+  .manual-btn-row { display: flex; gap: 10px; }
+  .manual-btn-row button { flex: 1; }
+  #manualConfirmBtn { background: var(--accent); color: #fff; }
+  #manualCancelBtn { background: transparent; color: var(--muted); border: 1px solid #33465e; }
+
+  .mode-row { display: flex; gap: 10px; margin-top: 10px; }
+  .mode-row button { flex: 1; background: var(--accent); color: #fff; }
+  #ocrBtn { background: #6a4fc4; }
+  .mode-row button[hidden] { display: none; }
 
   #cameraError { color: var(--fail); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
 
@@ -114,7 +136,7 @@
   #logList li { padding: 4px 6px; border-bottom: 1px solid #24344a; word-break: break-all; }
   #logList li.log-ok { color: var(--ok); }
   #logList li.log-fail { color: var(--fail); }
-  #logList li.log-ref { color: var(--ref); } /* V3 신규: 성공은 아니지만 뭔가 읽힌 "참고" 로그 */
+  #logList li.log-ref { color: var(--ref); }
 
   #copyLogBtn { background: var(--panel-2); color: var(--text); border: 1px solid #2a3c52; }
 
@@ -124,8 +146,8 @@
 </head>
 <body>
 
-  <h1>FRIBIN 중량 스캔 POC</h1>
-  <div class="subtitle">정솔푸드 기술검증 전용 · 서버 저장 없음 · 사진 저장 없음 · 로그인/거래처/DB 없음</div>
+  <h1>박스 중량 스캔 POC</h1>
+  <div class="subtitle">정솔푸드 기술검증 전용 · 서버 저장 없음 · 사진 저장 없음 · 로그인/거래처/DB 없음 · 브랜드·바코드 사전등록 없음</div>
 
   <div class="camera-wrap">
     <video id="video" autoplay muted playsinline></video>
@@ -133,14 +155,18 @@
     <canvas id="ocrCanvas"></canvas>
     <div class="status-badge" id="status" data-state="대기">대기</div>
 
-    <!-- V3 신규: 긴 가로 바코드 정렬 안내선 (실제 인식 영역을 자르지 않는 시각 가이드) -->
     <div class="scan-guide" id="scanGuide">
       <span class="corner tl"></span><span class="corner tr"></span>
       <span class="corner bl"></span><span class="corner br"></span>
     </div>
-    <div class="scan-guide-hint">긴 바코드를 이 선에 맞춰 가로로 비춰주세요</div>
+    <div class="scan-guide-hint" id="scanGuideHint">라벨을 이 선 안에 맞춰주세요 (바코드 인식용)</div>
 
-    <!-- V3 신규: 줌/손전등 (기기가 지원할 때만 표시) -->
+    <div class="ocr-guide" id="ocrGuide" hidden>
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+    </div>
+    <div class="ocr-guide-hint" id="ocrGuideHint" hidden>중량 숫자와 kg가 사각형 안에 들어오게 맞춰주세요</div>
+
     <div class="camera-controls">
       <button id="torchBtn" hidden type="button">🔦 손전등</button>
     </div>
@@ -153,37 +179,49 @@
   <div id="cameraError"></div>
 
   <div class="weight-panel">
-    <div id="weightBig">-- kg</div>
+    <div id="uncertainBanner"></div>
+    <div id="weightIdle" class="weight-panel-idle">-- kg</div>
+    <div id="candidateList" style="display:none;"></div>
     <div class="raw-row">
-      원본 바코드 문자열 (실시간 — 성공하지 않아도 계속 갱신됨)<br />
+      원본 인식 문자열(실시간)<br />
       <code id="rawText">(아직 스캔 안 됨)</code>
     </div>
     <div class="meta-row">
       <div>소요시간<b id="elapsed">-</b></div>
+      <div>OCR 로딩<b id="ocrLoadTime">-</b></div>
+      <div>OCR 인식<b id="ocrRecognizeTime">-</b></div>
     </div>
   </div>
 
   <div class="counters">
-    <div class="counter-box success"><div class="n" id="successCount">0</div><div class="label">성공 횟수</div></div>
+    <div class="counter-box success"><div class="n" id="successCount">0</div><div class="label">확정(성공) 횟수</div></div>
     <div class="counter-box fail"><div class="n" id="failCount">0</div><div class="label">실패 횟수</div></div>
   </div>
 
-  <button id="rescanBtn" class="big" hidden>다음 박스 · 다시 스캔</button>
+  <div class="action-row">
+    <button id="confirmBtn" class="big" disabled>이 중량으로 확정</button>
+    <button id="retryBtn" class="big">다시 인식</button>
+  </div>
 
-  <!-- V3 신규: OCR 보조 인식 -->
-  <button id="ocrBtn" class="big" hidden>📷 OCR로 중량 읽기 (보조, GS1 인식 어려울 때)</button>
-  <div class="ocr-panel" id="ocrPanel">
-    <h3>OCR 인식 결과 — 확인 후 직접 확정해 주세요 (자동 저장 안 됨)</h3>
-    <div class="ocr-candidate" id="ocrCandidate">인식 중...</div>
-    <div class="ocr-raw" id="ocrRawText">-</div>
-    <div class="ocr-actions">
-      <button id="ocrConfirmBtn" disabled>이 값으로 확정</button>
-      <button id="ocrCancelBtn">취소 · 다시 스캔</button>
+  <div class="manual-row">
+    <button id="manualEntryBtn" class="big" type="button" hidden>✏ 직접 입력 (0~100kg)</button>
+  </div>
+  <div id="manualEntryPanel">
+    <label for="manualWeightInput">라벨 실물을 보고 중량을 직접 입력하세요 (kg, 소수점 가능)</label>
+    <input type="number" id="manualWeightInput" min="0" max="100" step="0.1" inputmode="decimal" placeholder="예: 9.4" />
+    <div class="manual-btn-row">
+      <button id="manualConfirmBtn">이 값으로 확정 후보에 넣기</button>
+      <button id="manualCancelBtn">취소</button>
     </div>
   </div>
 
-  <details open>
-    <summary>개발자 정보 (디코더 원본 반환값 — 최근 시도 기준, 실기 확인용)</summary>
+  <div class="mode-row">
+    <button id="barcodeModeBtn" hidden type="button">📷 바코드로 중량 찾기</button>
+    <button id="ocrBtn" hidden type="button">🔤 글자로 중량 찾기</button>
+  </div>
+
+  <details>
+    <summary>개발자 정보 (디코더/OCR 원본 반환값 — 최근 시도 기준, 실기 확인용)</summary>
     <div class="dev-grid">
       <div class="k">format (바코드 형식)</div><div class="v" id="devFormat">-</div>
       <div class="k">symbology</div><div class="v" id="devSymbology">-</div>
@@ -194,9 +232,10 @@
       <div class="k">파싱한 AI 코드</div><div class="v" id="devAi">-</div>
       <div class="k">파싱 전 중량 숫자(원본 6자리)</div><div class="v" id="devRawDigits">-</div>
       <div class="k">최종 kg 값</div><div class="v" id="devFinalKg">-</div>
-      <div class="k">인식 소요시간</div><div class="v" id="devElapsed">-</div>
       <div class="k">디코더 error 필드</div><div class="v" id="devError">-</div>
       <div class="k">카메라 해상도 / 줌·손전등 지원</div><div class="v" id="devCameraCaps">-</div>
+      <div class="k">OCR 언어팩</div><div class="v" id="devOcrLangs">kor+eng</div>
+      <div class="k">화면 전체 안전망(개발자 로그 전용 — 사용자 후보 아님)</div><div class="v" id="devOcrFallback">-</div>
     </div>
   </details>
 
@@ -207,13 +246,17 @@
   </details>
 
   <div class="footnote">
-    이 페이지는 <b>정솔푸드 수입육 박스 중량 스캔 시스템 — FRIBIN 라벨 기술검증 POC</b>입니다.<br />
-    카메라 프레임은 인식 처리에만 잠깐 쓰이고 저장되거나 외부로 전송되지 않습니다. OCR도 같은 원칙으로,
-    캡처한 화면은 글자 인식에만 쓰이고 저장·전송되지 않습니다. 로그인, 거래처/상품 선택, 서버 저장,
-    Excel 연동, DB, GTIN 매핑 기능은 이 POC에 없습니다(의도적으로 제외).<br />
-    바코드 인식: zxing-wasm v3.1.2 · OCR(보조): tesseract.js v7.0.0 (둘 다 오픈소스,
-    <a href="https://github.com/Sec-ant/zxing-wasm" style="color:#7fb0ff;">zxing-wasm</a> /
-    <a href="https://github.com/naptha/tesseract.js" style="color:#7fb0ff;">tesseract.js</a>)
+    이 페이지는 <b>정솔푸드 수입육 박스 중량 스캔 시스템 — 원라벨/국내라벨 겸용 기술검증 POC</b>입니다.<br />
+    카메라·OCR 캡처 화면은 인식 처리에만 잠깐 쓰이고 저장·전송되지 않습니다. 어떤 방식으로 인식하든
+    자동 저장/자동 확정 없이 직원이 "이 중량으로 확정"을 눌러야 반영됩니다. 브랜드·품목·바코드 번호를
+    미리 등록하는 구조는 없습니다. 로그인, 거래처/상품 선택, 서버 저장, Excel 연동, DB, GTIN 매핑
+    기능은 이 POC에 없습니다(의도적으로 제외).<br />
+    OCR은 화면 중앙의 작은 사각형(라벨의 "중량 X kg" 한 줄) 안쪽만 인식하며, 서로 다른 전처리
+    결과 중 최소 2개 이상이 일치할 때만 "권장" 후보로 표시합니다. 일치하지 않으면 "불확실"로
+    표시하고 직원이 후보를 직접 고르거나 다시 촬영하거나 직접 입력해야 합니다 — 자동 확정은
+    어떤 경우에도 없습니다.<br />
+    바코드 인식: zxing-wasm v3.1.2 · OCR(보조, 영어+한국어): tesseract.js v7.0.0 (둘 다 오픈소스,
+    로컬 실행, 외부 전송 없음)
   </div>
 
   <script type="module" src="./app.js"></script>

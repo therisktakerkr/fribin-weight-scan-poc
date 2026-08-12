@@ -1,8 +1,24 @@
-# FRIBIN 중량 스캔 POC — 결과 보고 (정솔푸드)
+# 박스 중량 스캔 POC — 결과 보고 (정솔푸드)
 
-작성일: 2026-08-11 (3차 수정: 실제 FRIBIN 박스 테스트 결과 반영 — 아래 "V3" 섹션이 최신 내용입니다)
+작성일: 2026-08-12 (4차 수정: 원라벨/국내 한글 라벨 겸용 인식 — 아래 "V4" 섹션이 최신 내용입니다)
 
-## V3. 실제 FRIBIN 박스 테스트 결과 반영 (최신 — 이 섹션부터 읽으세요)
+## ⚠ 먼저 읽어주세요 — 첨부파일 관련
+
+이번 요청에서 "첨부한 기존 프로젝트(`fribin_weight_scan_poc_2.zip`)와 실제 라벨 사진 3장을
+먼저 분석한 후 작업하라"고 하셨는데, **이 세션에는 zip도 사진도 실제로 도착하지 않았습니다**
+(업로드 폴더를 확인했지만 비어 있었습니다). 두 가지를 각각 다르게 처리했습니다.
+
+- **기존 프로젝트**: 제가 직전 대화에서 이미 만들어 이 작업환경에 그대로 가지고 있던
+  `fribin_weight_scan_poc`(V3, GitHub Pages에 올리신 그 버전과 동일한 내용)를 기준으로
+  이어서 작업했습니다. 별도로 다시 받을 필요는 없었습니다.
+- **실제 라벨 사진 3장**: 이건 대체할 방법이 없어 받지 못했습니다. 아래 "4. 실제 첨부 사진
+  3장 OCR 결과" 항목은 그래서 **수행하지 못했고, 정직하게 "미실시"로 남겨뒀습니다.**
+  합성 이미지로 만든 결과를 실제 사진 테스트인 것처럼 보고하지 않았습니다 — 이 부분은 사진을
+  보내주셔야 완료할 수 있습니다.
+
+---
+
+## V4. 원라벨/국내 한글 라벨 겸용 인식 (최신 — 이 섹션부터 읽으세요)
 
 실제 라벨 정보를 알려주셔서 감사합니다. 아래 두 가지 실측 결과를 그대로 재현해 원인을 확인하고 고쳤습니다.
 
@@ -13,6 +29,188 @@
   위쪽 바코드가 먼저 스캔을 "성공"으로 처리하고 멈춰버리니, 정작 필요한 아래쪽 GS1-128까지
   카메라가 도달할 시간이 없었습니다. (5초라는 시간 자체도 실물 기준으론 짧았고, 이번에 15초로
   늘렸습니다.)
+
+이번 목적("브랜드·품목·바코드 번호를 미리 등록하지 않고도 휴대폰 카메라로 박스 라벨의
+순중량을 안전하게 찾을 수 있는가")에 맞춰, 아래 요청하신 10개 항목 순서로 그대로 보고합니다.
+
+### 1. 실제로 변경한 파일
+
+- `app.js` — 큰 폭으로 다시 짰습니다. 기존 GS1 인식·다중 바코드 계속 검색·15초 타임아웃
+  로직은 그대로 두고, "찾으면 바로 확정" 구조를 **"찾으면 후보로 보여주고 사람이 확정"**
+  구조로 바꿨습니다(요청 5번 — 바코드 성공도 이제 즉시 확정되지 않습니다. 이전 버전과의
+  가장 큰 차이입니다). OCR 부분은 완전히 새로 작성했습니다(다중 후보, ROI 캡처, 한국어 추가,
+  로딩/인식 시간 분리).
+- `index.html` — 화면 구성을 요청하신 5개 버튼(카메라 시작/바코드로 중량 찾기/글자로 중량
+  찾기/이 중량으로 확정/다시 인식) 중심으로 다시 짰습니다. 개발자 정보는 기본 접힘 상태로
+  바꿨습니다.
+- `ocr-weight-parser.js` — 완전히 새로 작성했습니다. 기존(V3)에는 "Net weight" 문구 하나만
+  찾는 단일 후보 파서였는데, 이번에는 요청하신 대로 모든 "숫자+kg"를 후보로 모으고, 순중량/
+  총중량/포장중량/규격/범위 표현을 문맥으로 구분하는 다중 후보 파서로 바꿨습니다.
+- `ocr-weight-parser.test.js` — 위 변경에 맞춰 13개 테스트로 다시 작성했습니다(요청하신 8개
+  케이스 전부 포함).
+
+**변경하지 않은 파일** (요청하신 "기존 GS1 파서와 FRIBIN 인식 기능을 깨뜨리지 말고 유지"를
+그대로 지켰습니다): `gs1-parser.js`, `gs1-parser.test.js`, `vendor/zxing-wasm/` 전부, 그리고
+바코드 인식 알고리즘 자체(다중 바코드 계속 검색 / AI 3100~3109만 성공 처리 / 참고 로그 유지
+/ 15초 타임아웃)는 한 줄도 건드리지 않았습니다.
+
+### 2. 새로 추가한 파일과 용량
+
+| 파일/폴더 | 용량 | 내용 |
+|---|---|---|
+| `vendor/tesseract/lang-data/kor.traineddata.gz` | 약 6.9MB | 한국어 OCR 학습 데이터 (요청 6번) |
+| `verify-real-label-string.mjs` | - | (V3에서 추가, 유지) |
+| `playwright-ocr-korean-check.mjs` | - | [신규] 한국어 OCR 검증 스크립트 |
+| `playwright-ocr-english-check.mjs` | - | [신규] 영어 OCR 검증 스크립트(회귀) |
+| `playwright-ocr-multicandidate-check.mjs` | - | [신규] 다중 후보(총중량/순중량 동시 등장) 검증 스크립트 |
+| `playwright-fribin-regression-check.mjs` | - | [신규] FRIBIN 실제값 회귀 테스트(새 확인 절차 반영판) |
+| `playwright-plainbarcode-regression-check.mjs` | - | [신규] 일반 바코드 단독 노출 시 후보 없음 + 계속 검색 확인 |
+| `test-barcodes/synthetic_korean_label_*.png` 등 | 각 수십KB | [신규] 제가 만든 합성 한글/영어 라벨 텍스트 이미지(**실제 사진 아님**, 항목 4 참고) |
+
+기존 `vendor/tesseract/lang-eng/`, `vendor/tesseract/lang-kor/`처럼 언어별 하위 폴더로
+나눴던 V3 구조는 이번에 `vendor/tesseract/lang-data/`(영어+한국어를 같은 폴더에 함께)로
+합쳤습니다 — tesseract.js가 언어팩을 로드할 때 하나의 `langPath` 아래에서 모든 언어 파일을
+찾기 때문입니다. 폴더째로 GitHub에 다시 올리시면 이 구조로 정리됩니다.
+
+`vendor/tesseract` 전체 용량은 기존 영어(약 11MB)에 한국어(약 6.9MB)가 더해져 **약 18MB →
+약 25MB**로 늘었습니다.
+
+### 3. 기존 테스트 결과
+
+| 테스트 | 결과 |
+|---|---|
+| 기존 GS1 파서 단위테스트 9개 | **9/9 통과, 변경 없음** |
+| V3의 5초→15초 타임아웃, 다중 바코드 계속 검색 로직 | 재검증 통과 (아래 5번 항목) |
+
+### 4. 실제 첨부 사진 3장 OCR 결과 — **미실시 (사진을 받지 못함)**
+
+맨 위 "먼저 읽어주세요" 항목에서 말씀드린 대로, 사진 3장이 이 세션에 도착하지 않아
+`9.4kg`/`24.7kg`/`17.8kg`가 실제 사진에서 후보로 검출되는지 확인하지 못했습니다.
+
+대신 제가 직접 만든 **합성 텍스트 이미지**(진짜 사진이 아닙니다, 폰트로 그린 텍스트입니다)로
+파이프라인 자체가 작동하는지만 확인했고, 그 결과도 있는 그대로 보고합니다.
+
+- `"중량 9.4 kg"` 합성 이미지 → OCR 원문 `"중량 9.4 8"`로 인식됨(숫자 9.4는 정확, "kg"이
+  "8"로 오독됨) → 저희 파서는 "kg"이 없으면 후보로 잡지 않도록 설계되어 있어 **이 경우
+  후보가 0개로 나왔습니다.** 즉 오답을 확정하는 것보다는 안전한 방향으로 실패했지만,
+  **정답(9.4kg)을 후보로 보여주지도 못했습니다.**
+- `"Net weight: 14,20 Kg"` 합성 이미지 → 정확히 `14.20kg`, 순중량으로 인식·확정까지 성공.
+- 이 오독은 OCR 언어팩 순서(한국어를 먼저 로드)를 바꾸자 많이 개선됐습니다(자세한 비교는
+  아래 "OCR 언어 순서 실험" 참고) — 하지만 완전히 사라지지는 않았습니다.
+
+**결론: 국내 한글 라벨의 OCR 인식률은 이번 합성 테스트에서 불완전했고, 이것이 폰트로 그린
+텍스트의 한계인지 실제 인쇄 라벨에서도 나타나는 문제인지는 실제 사진 없이는 판단할 수
+없습니다.** 사진 3장을 보내주시면 바로 확인해 다시 보고드리겠습니다.
+
+#### OCR 언어 순서 실험 (참고 — 실제로 시도해보고 발견한 것)
+
+| 언어 순서 | `"중량 9.4 kg"` 인식 결과 | `"Net weight: 14,20 Kg"` 인식 결과 |
+|---|---|---|
+| `eng` 먼저 (V3 방식) | `"539.4 kg"` (한글을 숫자로 완전히 오독 — **더 위험**: 틀린 숫자가 그럴듯하게 나옴) | `"Net weight: 14,20 Kg"` (정상) |
+| `kor` 먼저 (V4에서 채택) | `"중량 9.4 8"` (숫자는 맞고 "kg"만 오독 — 후보 0개로 안전하게 실패) | `"Net weight: 14,20 Kg"`, 신뢰도 96% (오히려 더 좋음) |
+
+`kor`를 먼저 로드하는 순서가 한글 숫자 인식과 영어 인식 양쪽 모두에서 더 나았거나 최소한
+동일해, 이번 버전은 이 순서를 기본값으로 채택했습니다. 다만 "kg" 오독 문제 자체는 남아있어,
+실제 사진으로 추가 확인이 필요합니다.
+
+### 5. FRIBIN 바코드 회귀 테스트 결과
+
+실제 FRIBIN 라벨 값(`(01)98420945631698(15)271215(3102)001420(10)51215293`)으로 다시
+검증했습니다(`playwright-fribin-regression-check.mjs`).
+
+```json
+// 후보 확인 단계 (자동 확정되지 않고 여기서 멈춤 — 요청사항 5 반영)
+{ "status": "확인 필요", "candidates": ["14.20kg"],
+  "rawText": "01984209456316981527121531020014201051215293",
+  "devResultCount": "2", "confirmDisabled": false }
+// "이 중량으로 확정" 클릭 후
+{ "status": "확정됨 (BARCODE)", "weightIdle": "확정: 14.20kg", "successCount": "1", "failCount": "0" }
+```
+
+추가로 요청하신 회귀 항목들도 각각 확인했습니다.
+
+- **일반 바코드 `25789003` → 중량 후보 없음, 계속 검색**: 이 바코드만 17초간 계속 노출한
+  결과, 14초 시점까지 `실패 0건`·참고 로그만 8건 누적, 15초 시점에 정상적으로 타임아웃
+  처리됐습니다(`playwright-plainbarcode-regression-check.mjs`).
+- **일반 바코드를 먼저 읽어도 GS1 중량 검색 계속**: 위쪽 바코드만 2.5초간 먼저 노출한 뒤
+  전체 라벨이 나타나는 시나리오에서, 중간에 멈추지 않고 참고 로그만 쌓이다가 이후 정상적으로
+  후보를 찾아냈습니다(`playwright-sequence-check.mjs`).
+- **기존 GS1 파서 테스트 9개**: 위 3번 항목대로 전부 통과.
+
+### 6. 아직 확인하지 못한 사항
+
+- **가장 중요한 것: 실제 라벨 사진 3장 테스트** (4번 항목 — 사진 필요)
+- 실제 아이폰·안드로이드 실기 테스트 — 이번에도 시뮬레이션(Chromium 가짜 카메라)으로만
+  검증했습니다. FRIBIN 케이스는 실기로 이미 성공(1.34초)하셨다고 하셨지만, 이번에 바뀐
+  "후보 확인 후 확정" 절차와 OCR 다중 후보 UI는 실기로 아직 확인되지 않았습니다.
+- 연속 자동초점/줌/손전등의 실기 지원 여부 — 이전과 동일하게 시뮬레이션 환경에서는 항상
+  "미지원"으로만 나옵니다.
+- 국내 라벨의 실제 인쇄 품질(광택, 곡면, 저해상도 인쇄)에서 OCR ROI 캡처 각도·크기가
+  적절한지 — 시뮬레이션은 항상 화면 중앙에 평평하게 노출되는 이상적인 조건이었습니다.
+- 한글 "kg" 오독 문제가 실제 사진에서도 재현되는지(위 4번 항목 실험 참고).
+
+### 7~8. GitHub에서 교체해야 하는 파일 / 클릭 순서
+
+**바뀐 것은 3개 파일 교체 + 1개 파일 추가**입니다. 저장소를 새로 만들 필요는 없습니다.
+
+| 구분 | 대상 |
+|---|---|
+| 교체(덮어쓰기) | `app.js` |
+| 교체(덮어쓰기) | `index.html` |
+| 교체(덮어쓰기) | `ocr-weight-parser.js` |
+| 새로 추가 | `vendor/tesseract/lang-data/kor.traineddata.gz` (약 6.9MB) |
+
+**주의**: 이번에 `vendor/tesseract/lang-eng/`, `vendor/tesseract/lang-kor/`라는 하위 폴더
+구조를 `vendor/tesseract/lang-data/`(단일 폴더)로 바꿨습니다. 예전 방식(V3)으로 이미
+GitHub에 `lang-eng/eng.traineddata.gz`를 올려두셨다면, **그 예전 폴더가 저장소에 남아있어도
+동작에는 지장 없지만(그냥 안 쓰이는 파일)**, 깔끔하게 정리하고 싶으시면 저장소에서
+`vendor/tesseract/lang-eng` 폴더를 삭제하셔도 됩니다(필수는 아닙니다).
+
+**클릭 순서:**
+
+1. 이번 zip 압축 해제
+2. `github.com/<계정명>/fribin-weight-scan-poc` 저장소 페이지 이동
+3. **Add file → Upload files** 클릭
+4. `fribin_weight_scan_poc` 폴더에서 `app.js`, `index.html`, `ocr-weight-parser.js`,
+   `vendor` 폴더 전체를 한 번에 끌어다 놓기(폴더째로 끌어놓으면 `vendor/tesseract/lang-data/`
+   구조가 그대로 반영됩니다. `vendor/zxing-wasm/`도 같이 올라가지만 내용이 같아 무방합니다)
+5. 커밋 메시지 입력 후 **Commit changes**
+6. 이번에는 한국어 데이터(6.9MB)가 추가로 올라가 완료까지 다소 걸릴 수 있습니다(최대 1~2분)
+7. GitHub Pages는 이미 켜져 있어 별도 설정 없이 1~2분 뒤 같은 주소에 자동 반영됩니다
+
+### 9. 휴대폰 현장 테스트 방법
+
+1. 같은 주소(`https://<계정명>.github.io/fribin-weight-scan-poc/`)를 휴대폰 브라우저로 다시
+   엽니다(캐시 때문에 화면이 안 바뀐 것처럼 보이면 새로고침을 한 번 더 해주세요).
+2. **카메라 시작** 탭 → 카메라 권한 허용
+3. FRIBIN 박스는 그대로 GS1-128 라벨을 비추면 이전처럼 자동으로 후보가 뜹니다 →
+   **이 중량으로 확정** 탭
+4. 국내 한글 라벨 박스는 GS1 바코드에 순중량 AI가 없으므로, 15초 정도 기다려 "실패"로
+   넘어가거나 곧바로 **글자로 중량 찾기** 버튼을 탭해 라벨의 "중량"/"제품중량" 문구가 화면
+   중앙 안내선 안에 오도록 비춘 뒤 인식 결과를 기다립니다
+5. 후보가 여러 개 뜨면(총중량/포장중량 등도 함께 보일 수 있음) 화면에 "권장"으로 표시된
+   순중량 후보가 맞는지 확인 후 확정. 다르면 직접 원하는 후보를 탭해 선택 후 확정
+6. 화면 하단 "테스트 로그 복사"로 시도 기록을 정리해 보내주시면 다음 단계에 반영하겠습니다
+7. 특히 국내 라벨에서 OCR이 "후보 없음"으로 나오면, 화면 상단 "원본 인식 문자열"에 어떤
+   글자로 잘못 읽혔는지 나오니 그 내용도 함께 알려주시면 원인 파악에 도움이 됩니다
+
+### 10. 문제가 발생할 경우 원래 버전(V3)으로 되돌리는 방법
+
+- **가장 빠른 방법 — 우선 화면을 내리고 싶을 때**: 저장소 **Settings → Pages**에서 Source를
+  **None**으로 바꾸면 즉시 주소가 꺼집니다. 코드는 그대로 남아있어 나중에 다시 켤 수 있습니다.
+- **이전 버전 파일로 되돌리기**: 제가 앞서 보내드린 V3 zip(파일명 `fribin_weight_scan_poc.zip`,
+  대표님이 이미 GitHub에 올리셨던 그 버전)을 다시 풀어서, 그 안의 `app.js`, `index.html`,
+  `ocr-weight-parser.js`(V3에는 이 파일이 있지만 내용이 다릅니다)를 지금과 같은 방식으로
+  **Add file → Upload files**로 다시 끌어다 올려 덮어쓰면 V3 동작으로 되돌아갑니다.
+  (V3 당시에는 `vendor/tesseract/lang-eng/`만 있었으므로, 한국어 폴더는 삭제하지 않아도
+  자연스럽게 사용되지 않을 뿐 문제되지 않습니다.)
+- **GitHub 자체 기능으로 되돌리기(더 확실함)**: 저장소 메인 화면에서 커밋 개수(예: "12
+  commits") 링크를 클릭 → 이번 업로드 이전의 커밋을 찾아 클릭 → 우측의 `<> Browse files`로
+  그 시점의 파일을 열어 `app.js`/`index.html`/`ocr-weight-parser.js`를 각각 열고 우측 상단
+  다운로드(Raw 보기 후 저장)로 받아, 다시 Upload files로 덮어쓰면 정확히 그 시점으로
+  되돌릴 수 있습니다.
+
+---
 
 ### V3-1. 실제 라벨 값으로 직접 검증
 
@@ -232,36 +430,42 @@ FRIBIN 라벨 10회씩 스캔)은 제가 물리적인 카메라·라벨이 없�
 
 ---
 
-## 1. 생성한 파일 목록 (V3 기준 전체)
+## 1. 생성한 파일 목록 (V4 기준 전체)
 
 ```
 fribin_weight_scan_poc/
-├── index.html                 메인 테스트 화면 [V3: 스캔 가이드선, 줌/손전등 컨트롤, OCR 패널 추가]
-├── app.js                     메인 로직 [V3: 다중 바코드 처리, 15초 타임아웃, 고해상도, OCR 연동 등]
-├── gs1-parser.js              GS1 요소 스트링 파서 (310n → kg 변환 등) — V3에서 미변경
-├── gs1-parser.test.js         파서 사전검증 테스트 9개 (node로 직접 실행 가능) — V3에서 미변경
-├── ocr-weight-parser.js       [V3 신규] "Net weight: 14,20 Kg" 문구에서 중량을 뽑아내는 파서
-├── ocr-weight-parser.test.js  [V3 신규] 위 파서의 단위테스트 6개
+├── index.html                 메인 테스트 화면 [V4: 5버튼 구성, 후보 확인 UI로 재구성]
+├── app.js                     메인 로직 [V4: 후보-확인 구조, OCR ROI/다중언어/시간분리 등]
+├── gs1-parser.js              GS1 요소 스트링 파서 (310n → kg 변환 등) — V2 이후 미변경
+├── gs1-parser.test.js         파서 사전검증 테스트 9개 (node로 직접 실행 가능) — 미변경
+├── ocr-weight-parser.js       [V4 전면 재작성] 다중 후보 + 문맥 판정(순중량/총중량/포장/규격/범위)
+├── ocr-weight-parser.test.js  [V4 전면 재작성] 위 파서의 단위테스트 13개
 ├── parser-selftest-result.txt gs1-parser.test.js 실행 결과 원본 로그
 ├── verify-real-outputs.mjs    합성 GS1 바코드로 얻은 실제 디코더 반환값으로 파서 재검증(V2)
-├── verify-real-label-string.mjs [V3 신규] 대표님이 주신 실제 라벨 값으로 파서 재검증
-├── playwright-e2e-check.mjs        가짜 카메라 기본 성공 시나리오 검증(V1)
-├── playwright-timeout15-check.mjs  [V3 신규] 15초 타임아웃 검증(블랭크 영상 17초)
-├── playwright-reallabel-check.mjs  [V3 신규] 실제 라벨 합성 이미지로 전체 파이프라인 검증
-├── playwright-sequence-check.mjs   [V3 신규] "위쪽만 먼저 보이다 나중에 전체 노출" 시나리오 검증
-├── playwright-ocr-check.mjs        [V3 신규] OCR 버튼→인식→확정 전체 흐름 검증
+├── verify-real-label-string.mjs 실제 라벨 값으로 파서 재검증(V3)
+├── playwright-fribin-regression-check.mjs        [V4] FRIBIN 회귀 — 후보확인→확정 절차 반영판
+├── playwright-plainbarcode-regression-check.mjs  [V4 신규] 일반 바코드 단독, 후보없음+계속검색
+├── playwright-sequence-check.mjs                 위쪽만 먼저 노출 시나리오 (V4 UI로 갱신)
+├── playwright-timeout15-check.mjs                15초 타임아웃 (V4 UI로 갱신)
+├── playwright-ocr-english-check.mjs   [V4 신규] 영어 라벨 OCR 회귀
+├── playwright-ocr-korean-check.mjs    [V4 신규] 한국어 라벨 OCR (합성 이미지, 실제 사진 아님)
+├── playwright-ocr-multicandidate-check.mjs [V4 신규] 총중량/순중량 동시 등장, 선택권 검증
 ├── package.json                프로젝트 설명 + 실행 스크립트 정의
-├── vendor/zxing-wasm/           바코드 인식 라이브러리(zxing-wasm 3.1.2) — V3에서 미변경
+├── vendor/zxing-wasm/           바코드 인식 라이브러리(zxing-wasm 3.1.2) — 미변경
 │   ├── share.js, LICENSE(MIT), reader/index.js, reader/zxing_reader.wasm
-├── vendor/tesseract/             [V3 신규] OCR 보조 라이브러리(tesseract.js 7.0.0, 약 18MB)
+├── vendor/tesseract/             OCR 보조 라이브러리(tesseract.js 7.0.0, 약 25MB — V4에서 한국어 추가)
 │   ├── tesseract.esm.min.js, worker.min.js
 │   ├── tesseract-core-simd-lstm.wasm(.js)
-│   ├── lang-eng/eng.traineddata.gz
+│   ├── lang-data/eng.traineddata.gz, lang-data/kor.traineddata.gz  [V4: 폴더 구조 변경 + 한국어 추가]
 │   └── LICENSE-tesseract.js.md, LICENSE-tesseract.js-core.txt (둘 다 Apache-2.0)
-└── test-barcodes/               테스트용 이미지 모음 (전부 "가짜"/합성, 실제 FRIBIN 사진 아님)
+└── test-barcodes/               테스트용 이미지 모음 (전부 "가짜"/합성, 실제 사진 아님 — 4번 항목 참고)
     ├── synthetic_weight_only_3102_001420.png, synthetic_gtin_plus_weight.png, synthetic_lot_plus_weight.png
-    ├── real_label_top.png, real_label_bottom.png            [V3 신규] 실제 라벨 값으로 만든 개별 바코드
-    ├── synthetic_real_label_composite.png                    [V3 신규] 위 둘을 실제 라벨처럼 합성한 이미지
+    ├── real_label_top.png, real_label_bottom.png            실제 라벨 값으로 만든 개별 바코드
+    ├── synthetic_real_label_composite.png                    위 둘을 실제 라벨처럼 합성한 이미지
+    ├── synthetic_korean_label_중량_9.4kg.png                 [V4 신규] 합성 한글 라벨 텍스트
+    ├── synthetic_english_label_net_weight.png                [V4 신규] 합성 영어 라벨 텍스트
+    ├── synthetic_gross_net_label.png                         [V4 신규] 합성 다중후보(총중량/순중량) 라벨
+    ├── final-multi-candidate-screenshot.png                  [V4 신규] 다중 후보 확인 화면 실제 캡처
     ├── e2e_screenshot_synthetic_test.png
     ├── playwright-reallabel-screenshot.png                   [V3 신규] 합성 라벨 성공 스캔 화면 캡처
     └── playwright-ocr-screenshot.png                         [V3 신규] OCR 확정 성공 화면 캡처
